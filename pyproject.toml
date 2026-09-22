@@ -1,0 +1,41 @@
+[build-system]                     
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-fs"                    
+version = "0.1.0"
+requires-python = ">=3.11"          
+dependencies = [
+    "pymupdf",
+    "python-docx",
+    "python-pptx",               
+    "openpyxl",
+    "odfpy",
+    "pandas",
+    "striprtf",
+    "ebooklib",
+    "beautifulsoup4",
+    "lxml",
+    "pytesseract",
+    "Pillow",
+    "tree-sitter-language-pack",
+    "pyyaml",
+    "platformdirs",
+    "numpy",
+    "sentence-transformers",
+    "chromadb",
+    "rank_bm25",
+    "charset-normalizer"
+]
+
+[project.optional-dependencies]     # optional groups: pip install -e ".[research]"
+research = [ "scipy","statsmodels","ragas" ]
+dev = [ "pytest" ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rag_fs*"]               # which folders are your code (so tests/ and data/ aren't installed)
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]               # where pytest looks for tests
