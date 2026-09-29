@@ -39,3 +39,6 @@ include = ["rag_fs*"]               # which folders are your code (so tests/ and
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]               # where pytest looks for tests
+
+[tool.pyright]
+typeCheckingMode= "basic"
