@@ -6,7 +6,7 @@ import yaml
 class CorpusConfig:
     roots: list[Path] = field(default_factory=list)
     ignore_dirs: list[str] = field(default_factory=lambda: [
-        ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules"
+        ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules",".pytest_cache",".mypy_cache","*.egg-info"
     ])
     ignore_globs: list[str] = field(default_factory=lambda: [
         "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*"
@@ -54,7 +54,10 @@ class Config:
 
 def load_config(path: str | Path)->Config:
     data=yaml.safe_load(open(path)) or {}
-
+    allowed=["seed","corpus","chunking","models","retrieval","llm"]
+    for key in data:
+        if key not in allowed:
+            raise ValueError(f"unknown config section {key}")
     corpus_data= dict(data.get("corpus",{}))
     new_roots=[]
     for r in corpus_data.get("roots",[]):
@@ -62,7 +65,7 @@ def load_config(path: str | Path)->Config:
     corpus_data["roots"]=new_roots
 
     return Config(
-        seed=data.get("seed",14),
+        seed=data.get("seed",Config.seed),
         corpus=CorpusConfig(**corpus_data),
         chunking=ChunkingConfig(**data.get("chunking",{})),
         models=ModelsConfig(**data.get("models",{})),
