@@ -59,8 +59,11 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                 if(path.is_symlink() and not corpus.follow_symlinks):
                     result.ignored.append((path,"ignored_symlink"))
                     continue
-
-                rel_path=to_relative(path,root)
+                try:
+                    rel_path=to_relative(path,root)
+                except ValueError:
+                    result.ignored.append((path, "outside_root"))
+                    continue
                 try:
                     info = path.stat()
                     if info.st_size > max_allowed_bytes:

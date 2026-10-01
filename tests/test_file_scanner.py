@@ -135,3 +135,18 @@ def test_unreadable_file_does_not_stop_the_scan(fake_corpus):
 
     assert ("locked.txt", "unreadable") in ignored(result)
     assert "notes.txt" in found(result)
+
+
+def test_followed_symlink_outside_root_is_skipped(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "a.txt").write_text("a")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("s")
+    os.symlink(outside, root / "linkdir")
+
+    result = scan(CorpusConfig(roots=[root], follow_symlinks=True))
+
+    assert ("secret.txt", "outside_root") in ignored(result)
+    assert found(result) == ["a.txt"]
