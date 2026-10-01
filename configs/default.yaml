@@ -9,6 +9,9 @@ corpus:
     - .cache
     - __pycache__
     - node_modules
+    - .pytest_cache
+    - .mypy_cache
+    - "*.egg-info"
   ignore_globs:
     - "*.temp"
     - "*.log"
