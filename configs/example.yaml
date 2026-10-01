@@ -1,0 +1,8 @@
+#A yaml file will help with recreating tests for the paper.
+#In the yaml add only the settings you want to change
+#otherwise it will use the defaults from config.py
+#example below:
+
+#chunking:
+# overlap: 0.4
+# narrative_words: 200
