@@ -8,6 +8,8 @@ import fnmatch
 from collections import Counter
 import argparse
 
+MB=1024*1024
+
 @dataclass(frozen=True)
 class ScannedFile:
     root_id: str
@@ -26,7 +28,7 @@ class ScannerResult:
 def file_sha256(path: str | Path)->str:
     hash_temp=hashlib.sha256()
     with open(path,"rb") as f:
-        n=1024*1024        
+        n=MB       
         block=f.read(n)
         while(block!=b""):
             hash_temp.update(block)    
@@ -35,7 +37,7 @@ def file_sha256(path: str | Path)->str:
 
 def scan(corpus: CorpusConfig)->ScannerResult:
     result=ScannerResult()
-    max_allowed_bytes=corpus.max_file_size_mb*(1024*1024)
+    max_allowed_bytes=corpus.max_file_size_mb*(MB)
     for i,root in enumerate(corpus.roots):
         root_id=f"root_{i}"
         if not root.is_dir():
