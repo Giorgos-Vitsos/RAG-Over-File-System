@@ -1,14 +1,19 @@
 import datetime
 import logging
+import zipfile
 from pathlib import Path
 
+import docx
 import openpyxl
 import pandas as pd
 import pytest
+from docx.shared import Inches
+from PIL import Image
 
 from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
-from rag_fs.ingest.parsers import parse_file
+from rag_fs.ingest.parsers import PARSERS, parse_file
+from rag_fs.ingest.parsers.office import heading_level, read_docx, read_word_variants
 from rag_fs.ingest.parsers.tabular import (
     cell_to_str, format_rows, read_csv, read_ods, read_xls, read_xlsx,
 )
@@ -258,7 +263,7 @@ def test_empty_sheet_gives_empty_text():
 def make_xlsx(path, sheets):
     """Write an .xlsx file. `sheets` is a list of (sheet name, rows)."""
     book = openpyxl.Workbook()
-    book.remove(book.active)
+    book.remove(book.worksheets[0])   # the empty default sheet
     for name, rows in sheets:
         sheet = book.create_sheet(name)
         for row in rows:
@@ -403,3 +408,218 @@ def test_parse_file_reads_xls(tmp_path):
     assert doc.parse_status == "ok"
     assert doc.content_type == "tabular"
     assert doc.raw_text == EXPECTED_XLS
+
+
+# ---------- office: Word (.docx) ----------
+
+@pytest.mark.parametrize(
+    "style, level",
+    [
+        ("Title", 1),
+        ("Heading 1", 1),
+        ("Heading 2", 2),
+        ("Heading 4", 4),
+        ("Heading 9", 9),
+        ("Normal", 0),
+        ("Caption", 0),
+        ("Heading", 0),        # no number
+        ("Heading Char", 0),   # not a number at the end
+    ],
+)
+def test_heading_level(style, level):
+    assert heading_level(style) == level
+
+
+def make_docx(path):
+    """A Word document with every case read_docx has to handle."""
+    image = path.parent / "img.png"
+    Image.new("RGB", (60, 30), "white").save(image)
+
+    doc = docx.Document()
+    doc.add_heading("Εισαγωγή", level=1)
+    doc.add_paragraph("Πρώτη παράγραφος.\nΜε δεύτερη γραμμή.")
+    doc.add_paragraph("")
+    doc.add_paragraph("   ")
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text = "Όνομα", "Βαθμός"
+    table.cell(1, 0).text, table.cell(1, 1).text = "Μαρία", "9"
+    doc.add_heading("Μέθοδος", level=2)
+    doc.add_picture(str(image), width=Inches(1))
+    doc.inline_shapes[-1]._inline.docPr.set("descr", "Αρχιτεκτονική του συστήματος")
+    doc.add_picture(str(image), width=Inches(1))   # a second image, without alt text
+    doc.add_paragraph("Εικόνα 1: Η ροή των δεδομένων", style="Caption")
+    doc.add_heading("Λεπτομέρειες", level=4)
+    doc.add_paragraph("Τελευταία παράγραφος.")
+    doc.save(str(path))
+
+
+EXPECTED_DOCX = (
+    "# Εισαγωγή\n"
+    "\n"
+    "Πρώτη παράγραφος.\nΜε δεύτερη γραμμή.\n"
+    "\n"
+    "Όνομα: Μαρία; Βαθμός: 9\n"
+    "\n"
+    "## Μέθοδος\n"
+    "\n"
+    "[Image: Αρχιτεκτονική του συστήματος]\n"
+    "\n"
+    "Εικόνα 1: Η ροή των δεδομένων\n"
+    "\n"
+    "#### Λεπτομέρειες\n"
+    "\n"
+    "Τελευταία παράγραφος."
+)
+
+
+def test_read_docx_headings_tables_images_in_order(tmp_path):
+    f = tmp_path / "doc.docx"
+    make_docx(f)
+
+    assert read_docx(f) == EXPECTED_DOCX
+
+
+def test_read_docx_empty_document(tmp_path):
+    f = tmp_path / "empty.docx"
+    docx.Document().save(str(f))
+
+    assert read_docx(f) == ""
+
+
+def test_parse_file_reads_docx(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    make_docx(root / "doc.docx")
+    (root / "img.png").unlink()   # only the .docx should be in the corpus
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "prose"
+    assert doc.raw_text == EXPECTED_DOCX
+
+
+def test_parse_file_marks_a_broken_docx_as_failed(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "broken.docx").write_bytes(b"this is not a zip file")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "failed"
+
+
+# ---------- office: Word variants (.docm, .dotx, .dotm) ----------
+
+# Written out here on purpose (not imported from office.py),
+# so a typo in the constants of office.py is caught.
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+VARIANT_CONTENT_TYPES = {
+    ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
+    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    ".dotm": "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+}
+
+
+def make_word_variant(path):
+    """Build the test .docx, then save it as `path` with the label of its extension
+    (.docm/.dotx/.dotm) in [Content_Types].xml - which is all Word changes."""
+    base = path.parent / "base.docx"
+    make_docx(base)
+    content_type = VARIANT_CONTENT_TYPES[path.suffix]
+    with zipfile.ZipFile(base) as src, zipfile.ZipFile(path, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "[Content_Types].xml":
+                data = data.replace(DOCX_CONTENT_TYPE.encode(), content_type.encode())
+            dst.writestr(item, data)
+    base.unlink()
+    (path.parent / "img.png").unlink()
+
+
+@pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
+def test_read_docx_rejects_word_variants(tmp_path, ext):
+    # The reason read_word_variants exists. If a future python-docx accepts
+    # these files, this test fails and read_word_variants may no longer be needed.
+    f = tmp_path / f"doc{ext}"
+    make_word_variant(f)
+
+    with pytest.raises(ValueError, match="not a Word file"):
+        read_docx(f)
+
+
+@pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
+def test_read_word_variants_gives_same_text_as_docx(tmp_path, ext):
+    f = tmp_path / f"doc{ext}"
+    make_word_variant(f)
+
+    assert read_word_variants(f) == EXPECTED_DOCX
+
+
+def test_read_word_variants_leaves_the_file_on_disk_unchanged(tmp_path):
+    f = tmp_path / "doc.docm"
+    make_word_variant(f)
+    before = f.read_bytes()
+
+    read_word_variants(f)
+
+    assert f.read_bytes() == before
+
+
+def test_read_word_variants_also_reads_a_plain_docx(tmp_path):
+    # No label to change -> everything is copied as is.
+    f = tmp_path / "doc.docx"
+    make_docx(f)
+
+    assert read_word_variants(f) == EXPECTED_DOCX
+
+
+@pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
+def test_parse_file_reads_word_variants(tmp_path, ext):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    make_word_variant(root / f"doc{ext}")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "prose"
+    assert doc.raw_text == EXPECTED_DOCX
+
+
+def test_parse_file_marks_a_broken_docm_as_failed(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "broken.docm").write_bytes(b"this is not a zip file")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "failed"
+
+
+# ---------- registry ----------
+
+@pytest.mark.parametrize(
+    "ext, reader",
+    [
+        (".markdown", read_text),
+        (".docx", read_docx),
+        (".docm", read_word_variants),
+        (".dotx", read_word_variants),
+        (".dotm", read_word_variants),
+    ],
+)
+def test_extension_is_registered(ext, reader):
+    # Without this, a missing extension would still "work" through the
+    # read-as-text fallback for .markdown, or silently fail for the Word files.
+    assert PARSERS.get(ext) is reader
+
+
+# ---------- .markdown ----------
+
+def test_parse_file_reads_markdown_extension(tmp_path):
+    docs = parse_all(tmp_path, {"notes.markdown": "# Σημειώσεις\n\nΚείμενο.".encode()})
+
+    assert docs["notes.markdown"].parse_status == "ok"
+    assert docs["notes.markdown"].content_type == "prose"
+    assert docs["notes.markdown"].raw_text == "# Σημειώσεις\n\nΚείμενο."
