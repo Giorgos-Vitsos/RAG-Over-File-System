@@ -2,12 +2,16 @@ import datetime
 import logging
 from pathlib import Path
 
+import openpyxl
+import pandas as pd
 import pytest
 
 from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import parse_file
-from rag_fs.ingest.parsers.tabular import cell_to_str, format_rows
+from rag_fs.ingest.parsers.tabular import (
+    cell_to_str, format_rows, read_csv, read_ods, read_xlsx,
+)
 from rag_fs.ingest.parsers.text import read_text
 
 ALLOWED_STATUSES = {"ok", "ocr", "empty", "failed", "unsupported"}
@@ -244,3 +248,125 @@ def test_single_column_is_not_treated_as_a_table():
 def test_empty_sheet_gives_empty_text():
     assert format_rows([]) == ""
     assert format_rows([(None, None), ("", "")]) == ""
+
+
+# ---------- tabular: readers ----------
+
+def make_xlsx(path, sheets):
+    """Write an .xlsx file. `sheets` is a list of (sheet name, rows)."""
+    book = openpyxl.Workbook()
+    book.remove(book.active)
+    for name, rows in sheets:
+        sheet = book.create_sheet(name)
+        for row in rows:
+            sheet.append(row)
+    book.save(path)
+
+
+def make_ods(path, sheets):
+    """Write an .ods file. `sheets` is a list of (sheet name, rows)."""
+    with pd.ExcelWriter(path, engine="odf") as writer:
+        for name, rows in sheets:
+            pd.DataFrame(rows).to_excel(writer, sheet_name=name, header=False, index=False)
+
+
+EXPENSES = [
+    ["Ημερομηνία", "Κατηγορία", "Ποσό"],
+    [datetime.datetime(2024, 3, 1), "Ρεύμα", 54],
+]
+INCOME = [["Μήνας", "Ποσό"], ["Μάρτιος", 1200]]
+
+EXPECTED_TWO_SHEETS = (
+    "# Sheet: Έξοδα\n"
+    "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
+    "\n"
+    "# Sheet: Έσοδα\n"
+    "Μήνας: Μάρτιος; Ποσό: 1200"
+)
+
+
+def test_read_xlsx_all_sheets_and_skips_empty_ones(tmp_path):
+    f = tmp_path / "book.xlsx"
+    make_xlsx(f, [("Έξοδα", EXPENSES), ("Κενό", []), ("Έσοδα", INCOME)])
+
+    assert read_xlsx(f) == EXPECTED_TWO_SHEETS
+
+
+def test_read_ods_all_sheets(tmp_path):
+    f = tmp_path / "book.ods"
+    rows = [["Ημερομηνία", "Κατηγορία", "Ποσό"], ["2024-03-01", "Ρεύμα", 54]]
+    make_ods(f, [("Έξοδα", rows), ("Έσοδα", INCOME)])
+
+    assert read_ods(f) == EXPECTED_TWO_SHEETS
+
+
+@pytest.mark.parametrize(
+    "name, data, expected",
+    [
+        (   # Greek Excel export: cp1253 and ';' because ',' is the decimal mark
+            "greek.csv",
+            "Ημερομηνία;Κατηγορία;Ποσό\n2024-03-01;Ρεύμα;54,5\n".encode("cp1253"),
+            "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54,5",
+        ),
+        (   # a quoted cell that contains the delimiter must stay one cell
+            "address.csv",
+            b'date,address,amount\n2024-03-01,"Knossou 5, Heraklion",54\n',
+            "date: 2024-03-01; address: Knossou 5, Heraklion; amount: 54",
+        ),
+        (
+            "table.tsv",
+            b"a\tb\n1\t2\n",
+            "a: 1; b: 2",
+        ),
+        (   # one column: no delimiter to find, must not pick a letter
+            "names.csv",
+            b"name\nmaria\ngiorgos\n",
+            "name\nmaria\ngiorgos",
+        ),
+    ],
+)
+def test_read_csv(tmp_path, name, data, expected):
+    f = tmp_path / name
+    f.write_bytes(data)
+
+    assert read_csv(f) == expected
+
+
+def test_read_xlsx_raises_on_a_broken_file(tmp_path):
+    f = tmp_path / "broken.xlsx"
+    f.write_bytes(b"this is not a zip file")
+
+    with pytest.raises(Exception):
+        read_xlsx(f)
+
+
+# ---------- tabular: through parse_file (needs the readers in PARSERS) ----------
+
+def test_parse_file_uses_the_tabular_readers(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    make_xlsx(root / "book.xlsx", [("Έξοδα", EXPENSES)])
+    make_ods(root / "book.ods", [("Έσοδα", INCOME)])
+    (root / "data.csv").write_bytes(b"a;b\n1;2\n")
+
+    docs = {}
+    for scanned in scan(CorpusConfig(roots=[root])).files:
+        docs[scanned.rel_path.name] = parse_file(scanned)
+
+    assert docs["book.xlsx"].raw_text.startswith("# Sheet: Έξοδα")
+    assert docs["book.ods"].raw_text.startswith("# Sheet: Έσοδα")
+    assert docs["data.csv"].raw_text == "a: 1; b: 2"
+    for doc in docs.values():
+        assert doc.content_type == "tabular"
+        assert doc.parse_status == "ok"
+
+
+def test_parse_file_marks_a_broken_xlsx_as_failed(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "broken.xlsx").write_bytes(b"this is not a zip file")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "failed"
+    assert doc.content_type == "tabular"

@@ -1,6 +1,7 @@
 from rag_fs.ingest.file_scanner import ScannedFile
 from rag_fs.models import Document
 from .text import read_text
+from .tabular import read_csv,read_ods,read_xlsx
 import logging
 
 log = logging.getLogger(__name__)
@@ -19,7 +20,11 @@ PARSERS={
     ".cfg": read_text,
     ".yaml": read_text,
     ".yml": read_text,
-    ".toml": read_text
+    ".toml": read_text,
+    ".csv": read_csv,
+    ".xlsx": read_xlsx,
+    ".ods": read_ods,
+    ".tsv": read_csv
 }
 for ext in CODE_EXT:
     PARSERS[ext]=read_text

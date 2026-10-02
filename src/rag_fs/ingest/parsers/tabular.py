@@ -1,4 +1,10 @@
 import datetime
+import openpyxl
+from pathlib import Path
+import pandas as pd
+from .text import read_text
+import csv
+import io
 
 HEADER_SEARCH_ROWS = 10
 
@@ -62,3 +68,40 @@ def format_rows(rows)->str:
         if parts:
             lines.append("; ".join(parts))
     return "\n".join(lines)
+
+def read_xlsx(path: Path)->str:
+    book=openpyxl.load_workbook(path,read_only=True,data_only=True)
+    sheets=[]
+    for sheet in book.worksheets:
+        rows=list(sheet.iter_rows(values_only=True))
+        sheets.append((sheet.title,rows))
+    book.close()
+    return format_sheets(sheets)
+
+
+def format_sheets(sheets):
+    blocks=[]
+    for title,line in sheets:
+        text=format_rows(line)
+        if text:
+            blocks.append(f"# Sheet: {title}\n{text}")
+    return "\n\n".join(blocks)
+
+def read_ods(path: Path)->str:
+    tables=pd.read_excel(path,engine="odf",sheet_name=None,header=None,dtype=str,keep_default_na=False)
+    sheets=[]
+    for name,df in tables.items():
+        sheets.append((name,df.values.tolist()))
+    return format_sheets(sheets)
+
+def read_csv(path: Path)->str:
+    text=read_text(path)
+    if path.suffix.lower()==".tsv":
+        sep="\t"
+    else:
+        try:
+            sep=csv.Sniffer().sniff(text[:5000],delimiters=",;\t|").delimiter
+        except csv.Error:
+            sep=","
+    rows=list(csv.reader(io.StringIO(text),delimiter=sep))
+    return format_rows(rows)
