@@ -2,6 +2,7 @@ from rag_fs.ingest.file_scanner import ScannedFile
 from rag_fs.models import Document
 from .text import read_text
 from .tabular import read_csv,read_ods,read_xlsx,read_xls
+from .office import read_docx
 import logging
 
 log = logging.getLogger(__name__)
@@ -13,6 +14,7 @@ BINARY_EXT={".zip", ".gz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".bin",
 PARSERS={
     ".txt": read_text,
     ".md": read_text,
+    ".markdown": read_text,
     ".tex": read_text,
     ".bib": read_text,
     ".srt": read_text,
@@ -25,8 +27,10 @@ PARSERS={
     ".xlsx": read_xlsx,
     ".ods": read_ods,
     ".tsv": read_csv,
-    ".xls": read_xls
+    ".xls": read_xls,
+    ".docx": read_docx
 }
+
 for ext in CODE_EXT:
     PARSERS[ext]=read_text
   
