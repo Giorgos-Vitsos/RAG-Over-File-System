@@ -10,9 +10,11 @@ from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import parse_file
 from rag_fs.ingest.parsers.tabular import (
-    cell_to_str, format_rows, read_csv, read_ods, read_xlsx,
+    cell_to_str, format_rows, read_csv, read_ods, read_xls, read_xlsx,
 )
 from rag_fs.ingest.parsers.text import read_text
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 ALLOWED_STATUSES = {"ok", "ocr", "empty", "failed", "unsupported"}
 ALLOWED_CONTENT_TYPES = {"prose", "code", "tabular", "binary"}
@@ -184,6 +186,7 @@ def test_read_text_rejects_binary(tmp_path, data):
         (datetime.datetime(2024, 3, 1), "2024-03-01"),
         (datetime.datetime(2024, 3, 1, 14, 30), "2024-03-01 14:30:00"),
         (54, "54"),
+        (54.0, "54"),          # old .xls files store every number as a float
         (12.5, "12.5"),
         ("  Ρεύμα  ", "Ρεύμα"),
         ("line one\nline two", "line one / line two"),
@@ -370,3 +373,33 @@ def test_parse_file_marks_a_broken_xlsx_as_failed(tmp_path):
 
     assert doc.parse_status == "failed"
     assert doc.content_type == "tabular"
+
+
+# ---------- tabular: old Excel (.xls) ----------
+# tests/fixtures/expenses.xls holds the same data as EXPENSES (+ one more row) and INCOME,
+# plus an empty sheet. Dates are stored as day numbers and integers as floats in .xls.
+
+EXPECTED_XLS = (
+    "# Sheet: Έξοδα\n"
+    "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
+    "Ημερομηνία: 2024-04-01; Κατηγορία: Νερό; Ποσό: 12.5\n"
+    "\n"
+    "# Sheet: Έσοδα\n"
+    "Μήνας: Μάρτιος; Ποσό: 1200"
+)
+
+
+def test_read_xls_dates_numbers_and_sheets():
+    assert read_xls(FIXTURES / "expenses.xls") == EXPECTED_XLS
+
+
+def test_parse_file_reads_xls(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "expenses.xls").write_bytes((FIXTURES / "expenses.xls").read_bytes())
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "tabular"
+    assert doc.raw_text == EXPECTED_XLS

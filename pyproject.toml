@@ -26,12 +26,13 @@ dependencies = [
     "sentence-transformers",
     "chromadb",
     "rank_bm25",
-    "charset-normalizer"
+    "charset-normalizer",
+    "xlrd"
 ]
 
 [project.optional-dependencies]     # optional groups: pip install -e ".[research]"
 research = [ "scipy","statsmodels","ragas" ]
-dev = [ "pytest" ]
+dev = [ "pytest","pyright" ]
 
 [tool.setuptools.packages.find]
 where = ["src"]

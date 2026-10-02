@@ -5,6 +5,7 @@ import pandas as pd
 from .text import read_text
 import csv
 import io
+import xlrd  
 
 HEADER_SEARCH_ROWS = 10
 
@@ -14,6 +15,8 @@ def cell_to_str(value)->str:
         return ""
     if isinstance(value, datetime.datetime) and value.time() == datetime.time(0, 0):
         return str(value.date())
+    if isinstance(value,float) and value.is_integer():
+        return str(int(value))
     return str(value).replace("\n", " / ").strip()
 
 
@@ -105,3 +108,22 @@ def read_csv(path: Path)->str:
             sep=","
     rows=list(csv.reader(io.StringIO(text),delimiter=sep))
     return format_rows(rows)
+
+def read_xls(path: Path)->str:
+    book=xlrd.open_workbook(str(path))
+    sheets=[]
+    for sheet in book.sheets():
+        rows=[]
+        for r in range(sheet.nrows):
+            values=sheet.row_values(r)
+            types=sheet.row_types(r)
+            row=[]
+            for value,kind in zip(values,types):
+                if kind==xlrd.XL_CELL_DATE:
+                    value=xlrd.xldate_as_datetime(float(value),book.datemode)
+                row.append(value)
+            rows.append(row)
+        sheets.append((sheet.name,rows))
+    book.release_resources()
+    return format_sheets(sheets)
+
