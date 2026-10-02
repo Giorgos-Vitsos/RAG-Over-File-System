@@ -1,3 +1,4 @@
+import datetime
 import logging
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import parse_file
+from rag_fs.ingest.parsers.tabular import cell_to_str, format_rows
 from rag_fs.ingest.parsers.text import read_text
 
 ALLOWED_STATUSES = {"ok", "ocr", "empty", "failed", "unsupported"}
@@ -167,3 +169,78 @@ def test_read_text_rejects_binary(tmp_path, data):
 
     with pytest.raises(ValueError):
         read_text(f)
+
+
+# ---------- tabular: cell_to_str / format_rows ----------
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, ""),
+        (datetime.datetime(2024, 3, 1), "2024-03-01"),
+        (datetime.datetime(2024, 3, 1, 14, 30), "2024-03-01 14:30:00"),
+        (54, "54"),
+        (12.5, "12.5"),
+        ("  Ρεύμα  ", "Ρεύμα"),
+        ("line one\nline two", "line one / line two"),
+    ],
+)
+def test_cell_to_str(value, expected):
+    assert cell_to_str(value) == expected
+
+
+def test_simple_table_first_row_is_header():
+    rows = [
+        ("Ημερομηνία", "Κατηγορία", "Ποσό"),
+        (datetime.datetime(2024, 3, 1), "Ρεύμα", 54),
+        (None, None, None),
+        ("2024-04-01", "Νερό", 12.5),
+    ]
+    assert format_rows(rows) == (
+        "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
+        "Ημερομηνία: 2024-04-01; Κατηγορία: Νερό; Ποσό: 12.5"
+    )
+
+
+def test_title_rows_above_the_header_are_kept_as_text():
+    # Same layout as a real course spreadsheet: empty first row and column,
+    # a title, a row of column groups, then the real header.
+    N = None
+    rows = [
+        [N, N, N, N, N, N, N],
+        [N, "CS-209: English IV, Spring 2026", N, N, N, N, N],
+        [N, N, "TEAM MEMBERS", "Paper", N, "Phases", N],
+        [N, "TEAM #", "NAMES & AM", "Link", "A+B", "C+D", "TOTAL"],
+        [N, 1, "Aggelos Papanikolaou - 5601 (leader)\nEirini Lyroni - 5690",
+         "https://doi.org/10.1145/3635636.3656185", N, N, N],
+    ]
+    assert format_rows(rows) == (
+        "CS-209: English IV, Spring 2026\n"
+        "TEAM MEMBERS | Paper | Phases\n"
+        "TEAM #: 1; NAMES & AM: Aggelos Papanikolaou - 5601 (leader) / Eirini Lyroni - 5690; "
+        "Link: https://doi.org/10.1145/3635636.3656185"
+    )
+
+
+def test_empty_header_cell_gets_a_column_name():
+    rows = [("Ημερομηνία", "Κατηγορία", None), ("2024-03-15", None, 20)]
+    assert format_rows(rows) == "Ημερομηνία: 2024-03-15; col3: 20"
+
+
+def test_short_rows_do_not_crash():
+    rows = [("A", "B", "C"), ("1",)]
+    assert format_rows(rows) == "A: 1"
+
+
+def test_only_header_is_kept():
+    assert format_rows([("Προϊόν", "Ποσότητα", "Τιμή")]) == "Προϊόν | Ποσότητα | Τιμή"
+
+
+def test_single_column_is_not_treated_as_a_table():
+    rows = [("Ψώνια",), ("γάλα",), ("ψωμί",)]
+    assert format_rows(rows) == "Ψώνια\nγάλα\nψωμί"
+
+
+def test_empty_sheet_gives_empty_text():
+    assert format_rows([]) == ""
+    assert format_rows([(None, None), ("", "")]) == ""
