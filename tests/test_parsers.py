@@ -17,7 +17,7 @@ from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import PARSERS, parse_file
 from rag_fs.ingest.parsers.office import (
-    format_shape, heading_level, read_docx, read_pptx, read_word_variants,
+    format_shape, heading_level, read_docx, read_pptx, read_slide_variants, read_word_variants,
 )
 from rag_fs.ingest.parsers.tabular import (
     cell_to_str, format_rows, read_csv, read_ods, read_xls, read_xlsx,
@@ -590,6 +590,11 @@ def test_parse_file_marks_a_broken_docm_as_failed(tmp_path):
         (".dotx", read_word_variants),
         (".dotm", read_word_variants),
         (".pptx", read_pptx),
+        (".pptm", read_pptx),
+        (".potx", read_slide_variants),
+        (".potm", read_slide_variants),
+        (".ppsx", read_slide_variants),
+        (".ppsm", read_slide_variants),
     ],
 )
 def test_extension_is_registered(ext, reader):
@@ -728,6 +733,95 @@ def test_parse_file_marks_a_broken_pptx_as_failed(tmp_path):
     root = tmp_path / "corpus"
     root.mkdir()
     (root / "broken.pptx").write_bytes(b"this is not a zip file")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "failed"
+
+
+# ---------- office: PowerPoint variants (.pptm, .potx, .potm, .ppsx, .ppsm) ----------
+
+# Written out here on purpose (not imported from office.py),
+# so a typo in the constants of office.py is caught.
+PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
+SLIDE_VARIANT_CONTENT_TYPES = {
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+    ".potm": "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+    ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml",
+    ".ppsm": "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml",
+}
+SLIDE_VARIANTS_PPTX_REFUSES = [".potx", ".potm", ".ppsx", ".ppsm"]
+
+
+def make_slide_variant(path):
+    """Build the test .pptx, then save it as `path` with the label of its extension."""
+    base = path.parent / "base.pptx"
+    make_pptx(base)
+    content_type = SLIDE_VARIANT_CONTENT_TYPES[path.suffix]
+    with zipfile.ZipFile(base) as src, zipfile.ZipFile(path, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "[Content_Types].xml":
+                data = data.replace(PPTX_CONTENT_TYPE.encode(), content_type.encode())
+            dst.writestr(item, data)
+    base.unlink()
+    (path.parent / "img.png").unlink()
+
+
+def test_read_pptx_accepts_pptm(tmp_path):
+    # Unlike python-docx with .docm, python-pptx accepts the macro-enabled label.
+    f = tmp_path / "deck.pptm"
+    make_slide_variant(f)
+
+    assert read_pptx(f) == EXPECTED_PPTX
+
+
+@pytest.mark.parametrize("ext", SLIDE_VARIANTS_PPTX_REFUSES)
+def test_read_pptx_rejects_slide_variants(tmp_path, ext):
+    # The reason read_slide_variants exists.
+    f = tmp_path / f"deck{ext}"
+    make_slide_variant(f)
+
+    with pytest.raises(ValueError, match="not a PowerPoint file"):
+        read_pptx(f)
+
+
+@pytest.mark.parametrize("ext", SLIDE_VARIANTS_PPTX_REFUSES)
+def test_read_slide_variants_gives_same_text_as_pptx(tmp_path, ext):
+    f = tmp_path / f"deck{ext}"
+    make_slide_variant(f)
+
+    assert read_slide_variants(f) == EXPECTED_PPTX
+
+
+def test_read_slide_variants_leaves_the_file_on_disk_unchanged(tmp_path):
+    f = tmp_path / "deck.ppsx"
+    make_slide_variant(f)
+    before = f.read_bytes()
+
+    read_slide_variants(f)
+
+    assert f.read_bytes() == before
+
+
+@pytest.mark.parametrize("ext", list(SLIDE_VARIANT_CONTENT_TYPES))
+def test_parse_file_reads_slide_variants(tmp_path, ext):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    make_slide_variant(root / f"deck{ext}")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "prose"
+    assert doc.raw_text == EXPECTED_PPTX
+
+
+def test_parse_file_marks_a_broken_potx_as_failed(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "broken.potx").write_bytes(b"this is not a zip file")
 
     doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
 

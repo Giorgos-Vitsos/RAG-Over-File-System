@@ -11,13 +11,22 @@ from pptx.shapes.autoshape import Shape
 from pptx.shapes.base import BaseShape
 from pptx.shapes.graphfrm import GraphicFrame
 from pptx.shapes.group import GroupShape
+from pptx.presentation import Presentation as PptxPresentation
 
 
-DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx files
+DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
     "application/vnd.ms-word.document.macroEnabled.main+xml",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
     "application/vnd.ms-word.template.macroEnabledTemplate.main+xml"
+]
+
+PPTX_MAIN="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"#type of normal pptx file
+SLIDE_VARIANTS=[#types of ppt variants
+    "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+    "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+    "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml",
+    "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml"
 ]
 
 def heading_level(style_name:str)->int:
@@ -30,7 +39,6 @@ def heading_level(style_name:str)->int:
             return 0
     else:
         return 0
-
 
 def docx_to_text(doc: DocxDocument)->str:
     blocks=[]
@@ -66,22 +74,28 @@ def read_docx(path: Path)->str:
     doc=docx.Document(str(path))
     return docx_to_text(doc)
 
-#variants of docx can still be parsed as normal docx, for example in docm we dont need the macros so we parse it as docx
-def read_word_variants(path: Path)->str:
+#variants of some files can still be parsed as the standard file, for example in docm we dont need the macros so we parse it as docx
+def variants_to_main(path: Path,main: str,variants: list[str])->io.BytesIO:
     buffer=io.BytesIO()
-    with zipfile.ZipFile(path) as src,zipfile.ZipFile(buffer, "w") as dst:#we open the zip file (doc files are just zips) and a virtual one
+    with zipfile.ZipFile(path) as src,zipfile.ZipFile(buffer, "w") as dst:#we open the zip file and a virtual one
         for item in src.infolist():
             data=src.read(item.filename)
-            if item.filename=="[Content_Types].xml":#if the file is the one which holds the type of the doc
-                for variant in WORD_VARIANTS:
-                    data=data.replace(variant.encode(),DOCX_MAIN.encode())#we change it to normal docx
+            if item.filename=="[Content_Types].xml":#if the file is the one which holds the type of the variant
+                for variant in variants:
+                    data=data.replace(variant.encode(),main.encode())#we change it to the standard of that file type
             dst.writestr(item,data)#we copy everything to the virtual file
-    doc=docx.Document(buffer)#then we use that as normal .docx file
+    return buffer
+
+def read_word_variants(path: Path)->str:
+    doc=docx.Document(variants_to_main(path,DOCX_MAIN,WORD_VARIANTS))
     return docx_to_text(doc)
 
-def read_pptx(path: Path)->str:
+def read_slide_variants(path: Path)->str:
+    ppt=pptx.Presentation(variants_to_main(path,PPTX_MAIN,SLIDE_VARIANTS))
+    return pptx_to_text(ppt)
+
+def pptx_to_text(ppt: PptxPresentation)->str:
     output=[]
-    ppt=pptx.Presentation(str(path))
     for i,slide in enumerate(ppt.slides):
         block=[]
         title=slide.shapes.title
@@ -103,6 +117,10 @@ def read_pptx(path: Path)->str:
                 if notes_txt:
                     output.append(f"Notes: {notes_txt}")     
     return "\n\n".join(output)
+
+def read_pptx(path: Path)->str:
+    ppt=pptx.Presentation(str(path))
+    return pptx_to_text(ppt)
 
 def format_shape(shape:BaseShape)->list[str]:
     output=[]
