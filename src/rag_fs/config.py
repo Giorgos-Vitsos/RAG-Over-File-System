@@ -53,14 +53,15 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
 
 def load_config(path: str | Path)->Config:
-    data=yaml.safe_load(open(path)) or {}
+    with open(path,encoding="utf-8") as f:
+        data=yaml.safe_load(f) or {}
     allowed=["seed","corpus","chunking","models","retrieval","llm"]
     for key in data:
         if key not in allowed:
             raise ValueError(f"unknown config section {key}")
     corpus_data= dict(data.get("corpus",{}))
     new_roots=[]
-    for r in corpus_data.get("roots",[]):
+    for r in corpus_data.get("roots",[]):#we make strs to paths
         new_roots.append(Path(r).expanduser())
     corpus_data["roots"]=new_roots
 

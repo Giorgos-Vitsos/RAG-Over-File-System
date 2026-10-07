@@ -30,7 +30,7 @@ def file_sha256(path: str | Path)->str:
     with open(path,"rb") as f:
         n=MB       
         block=f.read(n)
-        while(block!=b""):
+        while(block!=b""):#we read the binary in blocks so we dont need to load the whole file
             hash_temp.update(block)    
             block=f.read(n)
     return hash_temp.hexdigest()
@@ -40,19 +40,19 @@ def scan(corpus: CorpusConfig)->ScannerResult:
     max_allowed_bytes=corpus.max_file_size_mb*(MB)
     for i,root in enumerate(corpus.roots):
         root_id=f"root_{i}"
-        if not root.is_dir():
+        if not root.is_dir(): #we check if we can walk in this dir (allowed or able)
             raise FileNotFoundError(f"File scanner wasnt able to find {root}")
         for part in root.parts:
             if(matches(part,corpus.ignore_dirs)):
                 raise ValueError(f"Corpus root: {root} is not allowed, part: {part} is in the ignore list. Check your settings")
         for dirpath,dirnames,filenames in os.walk(root,followlinks=corpus.follow_symlinks):
             keep=[]
-            for d in dirnames:
+            for d in dirnames: #for every dir insdie the current dir
                 if matches(d,corpus.ignore_dirs):
                     result.ignored.append((Path(dirpath)/d,"ignored_dir"))
                 else:
                     keep.append(d)
-            dirnames[:]=sorted(keep)
+            dirnames[:]=sorted(keep)#we want next loop to be only inside the allowed dirs
             for name in sorted(filenames):
                 path=Path(dirpath) / name
                 if matches(name,corpus.ignore_globs):
@@ -71,7 +71,7 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                     if info.st_size > max_allowed_bytes:
                         result.ignored.append((path, "too_large"))
                         continue
-                    file_hash = file_sha256(path)
+                    file_hash = file_sha256(path)#if this fails then is unreadable
                 except OSError:
                     result.ignored.append((path, "unreadable"))
                     continue

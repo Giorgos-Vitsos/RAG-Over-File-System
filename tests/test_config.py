@@ -44,6 +44,17 @@ def test_roots_are_converted_to_path(tmp_path):
     assert isinstance(config.corpus.roots[0], Path)
 
 
+def test_yaml_is_read_as_utf8(tmp_path):
+    # On Linux UTF-8 is the default anyway, so this passes even without
+    # encoding="utf-8". It guards Windows, where the default is often cp1253.
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("corpus:\n  roots: [\"/data/Έγγραφα\"]\n", encoding="utf-8")
+
+    config = load_config(yaml_file)
+
+    assert config.corpus.roots == [Path("/data/Έγγραφα")]
+
+
 def test_missing_group_falls_back_to_defaults(tmp_path):
     yaml_file = tmp_path / "test.yaml"
     yaml_file.write_text("seed: 99\n")

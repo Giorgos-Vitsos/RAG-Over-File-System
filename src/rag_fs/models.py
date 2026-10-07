@@ -11,7 +11,7 @@ class Document:
     raw_text: str
     content_type: str
     parse_status: str
-    sha256: str
+    sha256: str #to know if a file was changed
 
 @dataclass
 class Chunk:
@@ -43,15 +43,15 @@ class Query:
     key_term: str | None = None
     key_term_loc: str | None = None
     
-
+#we save our objects as json so the rag dont have to read the corpus everytime
 def save_jsonl(items,path):
     with open(path, "w",encoding="utf-8") as f:
         for item in items:
-            d=dataclasses.asdict(item)
+            d=dataclasses.asdict(item)#we save as dictionary
             path_to_string(d)
-            f.write(json.dumps(d,ensure_ascii=False)+"\n")
+            f.write(json.dumps(d,ensure_ascii=False)+"\n")#ascii is false so we can read them for testing
 
-
+#json dont know path so this function helps with that
 def path_to_string(d):
     for key,value in d.items():
         if isinstance(value,Path):
@@ -69,6 +69,7 @@ def load_jsonl(cls,path):
             items.append(dict_to_object(cls,d))
     return items
 
+#from the saved dictionary we have to load the objects
 def dict_to_object(cls,d):
     d=dict(d)
     if "file_path" in d:
