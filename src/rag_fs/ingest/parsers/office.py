@@ -6,6 +6,11 @@ from .tabular import format_rows
 from docx.document import Document as DocxDocument
 import io
 import zipfile
+import pptx
+from pptx.shapes.autoshape import Shape
+from pptx.shapes.base import BaseShape
+from pptx.shapes.graphfrm import GraphicFrame
+from pptx.shapes.group import GroupShape
 
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx files
@@ -74,3 +79,52 @@ def read_word_variants(path: Path)->str:
     doc=docx.Document(buffer)#then we use that as normal .docx file
     return docx_to_text(doc)
 
+def read_pptx(path: Path)->str:
+    output=[]
+    ppt=pptx.Presentation(str(path))
+    for i,slide in enumerate(ppt.slides):
+        block=[]
+        title=slide.shapes.title
+        for shape in slide.shapes:
+            if title is not None and shape.shape_id==title.shape_id:#if we have a title we dont want to write it twice
+                continue
+            block.extend(format_shape(shape))
+        header=f"# Slide {i+1}"
+        if title is not None:#we build the header with the title if it exists
+            title_txt=title.text_frame.text.strip()
+            if title_txt:
+                header=header+f": {title_txt}"  
+        output.append(header)
+        output.extend(block)
+        if slide.has_notes_slide:#we add notes if they exist
+            notes=slide.notes_slide.notes_text_frame
+            if notes is not None:
+                notes_txt=notes.text.strip()
+                if notes_txt:
+                    output.append(f"Notes: {notes_txt}")     
+    return "\n\n".join(output)
+
+def format_shape(shape:BaseShape)->list[str]:
+    output=[]
+    if isinstance(shape, GroupShape):
+        for sub_shape in shape.shapes:
+            output.extend(format_shape(sub_shape))
+    elif isinstance(shape, Shape):
+        text=shape.text_frame.text.strip()
+        if text:
+            output.append(text)
+    elif isinstance(shape,GraphicFrame):
+        if shape.has_table:
+            rows=[]
+            for row in shape.table.rows:
+                cells=[]
+                for cell in row.cells:
+                    cells.append(cell.text)
+                rows.append(cells)
+            text=format_rows(rows).strip()
+            if text:
+                output.append(text)     
+    for alt in shape._element.xpath("./*/p:cNvPr/@descr"):
+        if alt.strip():
+            output.append(f"[Image: {alt}]")
+    return output

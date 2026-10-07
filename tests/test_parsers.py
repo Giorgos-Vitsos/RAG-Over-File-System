@@ -6,14 +6,19 @@ from pathlib import Path
 import docx
 import openpyxl
 import pandas as pd
+import pptx
 import pytest
 from docx.shared import Inches
 from PIL import Image
+from pptx.shapes.autoshape import Shape as PptxShape
+from pptx.util import Inches as PptxInches
 
 from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import PARSERS, parse_file
-from rag_fs.ingest.parsers.office import heading_level, read_docx, read_word_variants
+from rag_fs.ingest.parsers.office import (
+    format_shape, heading_level, read_docx, read_pptx, read_word_variants,
+)
 from rag_fs.ingest.parsers.tabular import (
     cell_to_str, format_rows, read_csv, read_ods, read_xls, read_xlsx,
 )
@@ -182,8 +187,6 @@ def test_read_text_rejects_binary(tmp_path, data):
         read_text(f)
 
 
-# ---------- tabular: cell_to_str / format_rows ----------
-
 @pytest.mark.parametrize(
     "value, expected",
     [
@@ -191,7 +194,7 @@ def test_read_text_rejects_binary(tmp_path, data):
         (datetime.datetime(2024, 3, 1), "2024-03-01"),
         (datetime.datetime(2024, 3, 1, 14, 30), "2024-03-01 14:30:00"),
         (54, "54"),
-        (54.0, "54"),          # old .xls files store every number as a float
+        (54.0, "54"),         
         (12.5, "12.5"),
         ("  Ρεύμα  ", "Ρεύμα"),
         ("line one\nline two", "line one / line two"),
@@ -215,8 +218,6 @@ def test_simple_table_first_row_is_header():
 
 
 def test_title_rows_above_the_header_are_kept_as_text():
-    # Same layout as a real course spreadsheet: empty first row and column,
-    # a title, a row of column groups, then the real header.
     N = None
     rows = [
         [N, N, N, N, N, N, N],
@@ -258,12 +259,10 @@ def test_empty_sheet_gives_empty_text():
     assert format_rows([(None, None), ("", "")]) == ""
 
 
-# ---------- tabular: readers ----------
-
 def make_xlsx(path, sheets):
     """Write an .xlsx file. `sheets` is a list of (sheet name, rows)."""
     book = openpyxl.Workbook()
-    book.remove(book.worksheets[0])   # the empty default sheet
+    book.remove(book.worksheets[0]) 
     for name, rows in sheets:
         sheet = book.create_sheet(name)
         for row in rows:
@@ -311,12 +310,12 @@ def test_read_ods_all_sheets(tmp_path):
 @pytest.mark.parametrize(
     "name, data, expected",
     [
-        (   # Greek Excel export: cp1253 and ';' because ',' is the decimal mark
+        (  
             "greek.csv",
             "Ημερομηνία;Κατηγορία;Ποσό\n2024-03-01;Ρεύμα;54,5\n".encode("cp1253"),
             "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54,5",
         ),
-        (   # a quoted cell that contains the delimiter must stay one cell
+        (   
             "address.csv",
             b'date,address,amount\n2024-03-01,"Knossou 5, Heraklion",54\n',
             "date: 2024-03-01; address: Knossou 5, Heraklion; amount: 54",
@@ -326,7 +325,7 @@ def test_read_ods_all_sheets(tmp_path):
             b"a\tb\n1\t2\n",
             "a: 1; b: 2",
         ),
-        (   # one column: no delimiter to find, must not pick a letter
+        (   
             "names.csv",
             b"name\nmaria\ngiorgos\n",
             "name\nmaria\ngiorgos",
@@ -347,8 +346,6 @@ def test_read_xlsx_raises_on_a_broken_file(tmp_path):
     with pytest.raises(Exception):
         read_xlsx(f)
 
-
-# ---------- tabular: through parse_file (needs the readers in PARSERS) ----------
 
 def test_parse_file_uses_the_tabular_readers(tmp_path):
     root = tmp_path / "corpus"
@@ -380,10 +377,6 @@ def test_parse_file_marks_a_broken_xlsx_as_failed(tmp_path):
     assert doc.content_type == "tabular"
 
 
-# ---------- tabular: old Excel (.xls) ----------
-# tests/fixtures/expenses.xls holds the same data as EXPENSES (+ one more row) and INCOME,
-# plus an empty sheet. Dates are stored as day numbers and integers as floats in .xls.
-
 EXPECTED_XLS = (
     "# Sheet: Έξοδα\n"
     "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
@@ -410,8 +403,6 @@ def test_parse_file_reads_xls(tmp_path):
     assert doc.raw_text == EXPECTED_XLS
 
 
-# ---------- office: Word (.docx) ----------
-
 @pytest.mark.parametrize(
     "style, level",
     [
@@ -422,8 +413,8 @@ def test_parse_file_reads_xls(tmp_path):
         ("Heading 9", 9),
         ("Normal", 0),
         ("Caption", 0),
-        ("Heading", 0),        # no number
-        ("Heading Char", 0),   # not a number at the end
+        ("Heading", 0),       
+        ("Heading Char", 0),   
     ],
 )
 def test_heading_level(style, level):
@@ -446,7 +437,7 @@ def make_docx(path):
     doc.add_heading("Μέθοδος", level=2)
     doc.add_picture(str(image), width=Inches(1))
     doc.inline_shapes[-1]._inline.docPr.set("descr", "Αρχιτεκτονική του συστήματος")
-    doc.add_picture(str(image), width=Inches(1))   # a second image, without alt text
+    doc.add_picture(str(image), width=Inches(1))   
     doc.add_paragraph("Εικόνα 1: Η ροή των δεδομένων", style="Caption")
     doc.add_heading("Λεπτομέρειες", level=4)
     doc.add_paragraph("Τελευταία παράγραφος.")
@@ -490,7 +481,7 @@ def test_parse_file_reads_docx(tmp_path):
     root = tmp_path / "corpus"
     root.mkdir()
     make_docx(root / "doc.docx")
-    (root / "img.png").unlink()   # only the .docx should be in the corpus
+    (root / "img.png").unlink()   
 
     doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
 
@@ -509,10 +500,6 @@ def test_parse_file_marks_a_broken_docx_as_failed(tmp_path):
     assert doc.parse_status == "failed"
 
 
-# ---------- office: Word variants (.docm, .dotx, .dotm) ----------
-
-# Written out here on purpose (not imported from office.py),
-# so a typo in the constants of office.py is caught.
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 VARIANT_CONTENT_TYPES = {
     ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
@@ -539,8 +526,6 @@ def make_word_variant(path):
 
 @pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
 def test_read_docx_rejects_word_variants(tmp_path, ext):
-    # The reason read_word_variants exists. If a future python-docx accepts
-    # these files, this test fails and read_word_variants may no longer be needed.
     f = tmp_path / f"doc{ext}"
     make_word_variant(f)
 
@@ -567,7 +552,6 @@ def test_read_word_variants_leaves_the_file_on_disk_unchanged(tmp_path):
 
 
 def test_read_word_variants_also_reads_a_plain_docx(tmp_path):
-    # No label to change -> everything is copied as is.
     f = tmp_path / "doc.docx"
     make_docx(f)
 
@@ -597,8 +581,6 @@ def test_parse_file_marks_a_broken_docm_as_failed(tmp_path):
     assert doc.parse_status == "failed"
 
 
-# ---------- registry ----------
-
 @pytest.mark.parametrize(
     "ext, reader",
     [
@@ -607,15 +589,12 @@ def test_parse_file_marks_a_broken_docm_as_failed(tmp_path):
         (".docm", read_word_variants),
         (".dotx", read_word_variants),
         (".dotm", read_word_variants),
+        (".pptx", read_pptx),
     ],
 )
 def test_extension_is_registered(ext, reader):
-    # Without this, a missing extension would still "work" through the
-    # read-as-text fallback for .markdown, or silently fail for the Word files.
     assert PARSERS.get(ext) is reader
 
-
-# ---------- .markdown ----------
 
 def test_parse_file_reads_markdown_extension(tmp_path):
     docs = parse_all(tmp_path, {"notes.markdown": "# Σημειώσεις\n\nΚείμενο.".encode()})
@@ -623,3 +602,133 @@ def test_parse_file_reads_markdown_extension(tmp_path):
     assert docs["notes.markdown"].parse_status == "ok"
     assert docs["notes.markdown"].content_type == "prose"
     assert docs["notes.markdown"].raw_text == "# Σημειώσεις\n\nΚείμενο."
+
+
+LAYOUT_TITLE_AND_CONTENT = 1  
+LAYOUT_TITLE_ONLY = 5          
+LAYOUT_BLANK = 6               
+
+
+def set_alt_text(shape, text):
+    shape._element.xpath("./*/p:cNvPr")[0].set("descr", text)
+
+
+def set_notes(slide, text):
+    frame = slide.notes_slide.notes_text_frame
+    assert frame is not None
+    frame.text = text
+
+
+def make_pptx(path):
+    """A presentation with every case read_pptx has to handle."""
+    image = path.parent / "img.png"
+    Image.new("RGB", (60, 30), "white").save(image)
+    inch = PptxInches(1)
+
+    presentation = pptx.Presentation()
+
+    slide = presentation.slides.add_slide(presentation.slide_layouts[LAYOUT_TITLE_AND_CONTENT])
+    title = slide.shapes.title
+    assert title is not None
+    title.text = "  Εισαγωγή "
+    body = slide.placeholders[1]
+    assert isinstance(body, PptxShape)
+    body.text_frame.text = "Πρώτη κουκκίδα"
+    body.text_frame.add_paragraph().text = "Δεύτερη κουκκίδα"
+    slide.shapes.add_textbox(inch, PptxInches(5), inch, inch)         
+    set_notes(slide, "να πω για το dataset")
+
+    slide = presentation.slides.add_slide(presentation.slide_layouts[LAYOUT_BLANK])
+    table = slide.shapes.add_table(2, 2, inch, inch, PptxInches(4), inch).table
+    table.cell(0, 0).text, table.cell(0, 1).text = "Όνομα", "Βαθμός"
+    table.cell(1, 0).text, table.cell(1, 1).text = "Μαρία", "9"
+    set_alt_text(slide.shapes.add_picture(str(image), inch, PptxInches(3)), "Διάγραμμα")
+    set_alt_text(slide.shapes.add_picture(str(image), PptxInches(3), PptxInches(3)), "")
+    outer = slide.shapes.add_group_shape()
+    box = outer.shapes.add_textbox(PptxInches(5), PptxInches(5), inch, inch)
+    box.text_frame.text = "Κείμενο μέσα σε ομάδα"
+    inner = outer.shapes.add_group_shape()
+    box = inner.shapes.add_textbox(PptxInches(6), PptxInches(6), inch, inch)
+    box.text_frame.text = "Ομάδα μέσα σε ομάδα"
+
+    slide = presentation.slides.add_slide(presentation.slide_layouts[LAYOUT_TITLE_ONLY])
+    set_notes(slide, "   ")
+
+    presentation.save(str(path))
+
+
+EXPECTED_PPTX = (
+    "# Slide 1: Εισαγωγή\n"
+    "\n"
+    "Πρώτη κουκκίδα\nΔεύτερη κουκκίδα\n"
+    "\n"
+    "Notes: να πω για το dataset\n"
+    "\n"
+    "# Slide 2\n"
+    "\n"
+    "Όνομα: Μαρία; Βαθμός: 9\n"
+    "\n"
+    "[Image: Διάγραμμα]\n"
+    "\n"
+    "Κείμενο μέσα σε ομάδα\n"
+    "\n"
+    "Ομάδα μέσα σε ομάδα\n"
+    "\n"
+    "# Slide 3"
+)
+
+
+def test_read_pptx_slides_titles_tables_images_groups_notes(tmp_path):
+    f = tmp_path / "deck.pptx"
+    make_pptx(f)
+
+    assert read_pptx(f) == EXPECTED_PPTX
+
+
+def test_read_pptx_does_not_repeat_the_title(tmp_path):
+    f = tmp_path / "deck.pptx"
+    make_pptx(f)
+
+    assert read_pptx(f).count("Εισαγωγή") == 1
+
+
+def test_read_pptx_empty_presentation(tmp_path):
+    f = tmp_path / "empty.pptx"
+    pptx.Presentation().save(str(f))
+
+    assert read_pptx(f) == ""
+
+
+@pytest.mark.parametrize("alt, expected", [("", []), ("Χάρτης", ["[Image: Χάρτης]"])])
+def test_format_shape_picture(tmp_path, alt, expected):
+    image = tmp_path / "img.png"
+    Image.new("RGB", (60, 30), "white").save(image)
+    presentation = pptx.Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[LAYOUT_BLANK])
+    picture = slide.shapes.add_picture(str(image), PptxInches(0), PptxInches(0))
+    set_alt_text(picture, alt)
+
+    assert format_shape(picture) == expected
+
+
+def test_parse_file_reads_pptx(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    make_pptx(root / "deck.pptx")
+    (root / "img.png").unlink()  
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "prose"
+    assert doc.raw_text == EXPECTED_PPTX
+
+
+def test_parse_file_marks_a_broken_pptx_as_failed(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "broken.pptx").write_bytes(b"this is not a zip file")
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "failed"

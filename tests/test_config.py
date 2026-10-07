@@ -45,8 +45,6 @@ def test_roots_are_converted_to_path(tmp_path):
 
 
 def test_yaml_is_read_as_utf8(tmp_path):
-    # On Linux UTF-8 is the default anyway, so this passes even without
-    # encoding="utf-8". It guards Windows, where the default is often cp1253.
     yaml_file = tmp_path / "test.yaml"
     yaml_file.write_text("corpus:\n  roots: [\"/data/Έγγραφα\"]\n", encoding="utf-8")
 
