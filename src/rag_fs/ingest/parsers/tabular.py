@@ -16,7 +16,7 @@ def cell_to_str(value)->str:
         return str(value.date())#this only keeps the date
     if isinstance(value,float) and value.is_integer():
         return str(int(value))
-    return str(value).replace("\n", " / ").strip()#a cell can have multiply lines of text now we indicate it with /
+    return str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " / ").strip()#a cell can have multiply lines of text now we indicate it with /
 
 
 def plain_row(cells: list[str]) -> str:
@@ -54,14 +54,18 @@ def format_rows(rows)->str:
     for row in clean[:h]:#everything above the headers dont have them
         lines.append(plain_row(row))
     header=[]
-    for i,name in enumerate(clean[h]):
-        if not name:
-            header.append(f"col{i+1}")#if a header is empty we keep its location
-        else:
-            header.append(name)
+    max_width=max(len(row) for row in clean)#the longest row
+    for i in range(max_width):
+        if i<len(clean[h]):
+            possible_header=clean[h][i]#the header is either the real text or the number of the column
+            if possible_header:
+                header.append(possible_header)
+                continue
+        header.append(f"col{i+1}")
     data_rows = clean[h + 1:]
     if not data_rows:
         lines.append(plain_row(clean[h]))#if we dont have data then we return only the headers and whats above
+    
     for row in data_rows:
         parts = []
         for name, value in zip(header, row):#we zip the header with the cell's value

@@ -1002,10 +1002,7 @@ def test_read_csv_excel_utf8_bom_is_not_part_of_the_first_header(tmp_path):
     assert read_csv(f) == "Όνομα: Μαρία; Βαθμός: 9"
 
 
-@pytest.mark.parametrize("break_in_cell", [
-    "\n",   
-    pytest.param("\r\n", marks=pytest.mark.xfail(strict=True, reason="L29: \\r stays in the cell")),
-])
+@pytest.mark.parametrize("break_in_cell", ["\n", "\r\n"])
 def test_read_csv_line_break_inside_quotes(tmp_path, break_in_cell):
     f = tmp_path / "notes.csv"
     f.write_bytes(f'name,comment\r\nmaria,"first line{break_in_cell}second line"\r\n'.encode())
@@ -1013,13 +1010,11 @@ def test_read_csv_line_break_inside_quotes(tmp_path, break_in_cell):
     assert read_csv(f) == "name: maria; comment: first line / second line"
 
 
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 1")
-@pytest.mark.parametrize("line_break", ["\r\n", "\r"])   
+@pytest.mark.parametrize("line_break", ["\r\n", "\r"])
 def test_cell_to_str_any_line_break_becomes_a_slash(line_break):
     assert cell_to_str(f"first line{line_break}second line") == "first line / second line"
 
 
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 1")
 def test_read_xlsx_cell_with_windows_line_break(tmp_path):
     f = tmp_path / "notes.xlsx"
     make_xlsx(f, [("Σημειώσεις", [["Όνομα", "Σχόλιο"], ["Μαρία", "πρώτη γραμμή\r\nδεύτερη γραμμή"]])])
@@ -1027,7 +1022,6 @@ def test_read_xlsx_cell_with_windows_line_break(tmp_path):
     assert read_xlsx(f) == "# Sheet: Σημειώσεις\nΌνομα: Μαρία; Σχόλιο: πρώτη γραμμή / δεύτερη γραμμή"
 
 
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 1")
 def test_format_rows_keeps_values_beyond_the_header_far_down_the_table():
     """The wider row is past the first 10 rows, so the header itself is found correctly."""
     rows = [
@@ -1069,6 +1063,60 @@ def test_read_csv_values_beyond_the_last_header_are_kept(tmp_path):
     f.write_bytes(b"name,grade\nmaria,9,excellent\n")
 
     assert read_csv(f) == "name: maria; grade: 9; col3: excellent"
+
+
+@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2")
+def test_format_rows_wider_data_row_with_a_date_does_not_become_the_header():
+    rows = [("Ημερομηνία", "Περιγραφή"), ("2024-03-01", "Ρεύμα", "πληρώθηκε")]
+
+    assert format_rows(rows) == "Ημερομηνία: 2024-03-01; Περιγραφή: Ρεύμα; col3: πληρώθηκε"
+
+
+@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2")
+def test_format_rows_table_of_only_numbers_has_no_header():
+    rows = [("2024", "120", "340"), ("2025", "150", "380")]
+
+    assert format_rows(rows) == "2024 | 120 | 340\n2025 | 150 | 380"
+
+
+# Guards: these pass today and must keep passing after the new header rule.
+
+def test_format_rows_years_in_the_header_are_fine():
+    rows = [("Περιοχή", "2023", "2024"), ("Κρήτη", "120", "150")]
+
+    assert format_rows(rows) == "Περιοχή: Κρήτη; 2023: 120; 2024: 150"
+
+
+@pytest.mark.parametrize("subtitle", [("Εξάμηνο", "Χειμερινό"), ("Εξάμηνο", "2024")])
+def test_format_rows_subtitle_above_the_header_stays_a_subtitle(subtitle):
+    rows = [subtitle, ("Όνομα", "Μάθημα", "Βαθμός"), ("Μαρία", "ΗΥ100", "9")]
+
+    assert format_rows(rows) == f"{subtitle[0]} | {subtitle[1]}\nΌνομα: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9"
+
+
+def test_format_rows_table_of_only_words():
+    rows = [("Όνομα", "Επώνυμο"), ("Μαρία", "Παπαδάκη"), ("Νίκος", "Κωστάκης")]
+
+    assert format_rows(rows) == "Όνομα: Μαρία; Επώνυμο: Παπαδάκη\nΌνομα: Νίκος; Επώνυμο: Κωστάκης"
+
+
+# When the file itself marks the header rows (ODF table-header-rows, Word "repeat header row"),
+# the parser passes header_rows=N and no guessing is done.
+
+@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2 (header_rows parameter)")
+def test_format_rows_header_marked_by_the_file_is_trusted_even_if_numeric():
+    rows = [("2023", "2024"), ("120", "150")]
+
+    assert format_rows(rows, header_rows=1) == "2023: 120; 2024: 150"
+
+
+@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2 (header_rows parameter)")
+def test_format_rows_two_header_rows_are_joined_per_column():
+    """A group title over two columns (merged cell, already filled by step 3) and the names below it.
+    Per column: the non-empty names from top to bottom, without repeats, joined with " - "."""
+    rows = [("Όνομα", "Βαθμοί", "Βαθμοί"), ("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8")]
+
+    assert format_rows(rows, header_rows=2) == "Όνομα: Μαρία; Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8"
 
 
 GRADES = [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Νίκος", "απαλλαγή", "")]
