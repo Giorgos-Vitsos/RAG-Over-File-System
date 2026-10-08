@@ -2,7 +2,7 @@ from rag_fs.ingest.file_scanner import ScannedFile
 from rag_fs.models import Document
 from .text import read_text
 from .tabular import read_csv,read_ods,read_xlsx,read_xls
-from .office import read_docx,read_word_variants,read_pptx,read_slide_variants
+from .office import read_docx,read_word_variants,read_pptx,read_slide_variants,read_rtf
 import logging
 
 log = logging.getLogger(__name__)
@@ -37,7 +37,8 @@ PARSERS={
     ".potx": read_slide_variants,
     ".potm": read_slide_variants,
     ".ppsx": read_slide_variants,
-    ".ppsm": read_slide_variants
+    ".ppsm": read_slide_variants,
+    ".rtf": read_rtf
 }
 
 for ext in CODE_EXT:

@@ -12,6 +12,8 @@ from pptx.shapes.base import BaseShape
 from pptx.shapes.graphfrm import GraphicFrame
 from pptx.shapes.group import GroupShape
 from pptx.presentation import Presentation as PptxPresentation
+from striprtf.striprtf import rtf_to_text
+from .text import read_text
 
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
@@ -146,3 +148,12 @@ def format_shape(shape:BaseShape)->list[str]:
         if alt.strip():
             output.append(f"[Image: {alt}]")
     return output
+
+def read_rtf(path: Path)->str:
+    text=read_text(path).strip()
+    if not text.startswith(r"{\rtf1"):#if it doesnt start with that then its not a real .rtf file
+        raise ValueError("Not an .rtf file")
+    final=rtf_to_text(text).strip()
+    return final
+    
+    

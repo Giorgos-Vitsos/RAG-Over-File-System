@@ -17,7 +17,8 @@ from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import PARSERS, parse_file
 from rag_fs.ingest.parsers.office import (
-    format_shape, heading_level, read_docx, read_pptx, read_slide_variants, read_word_variants,
+    format_shape, heading_level, read_docx, read_pptx, read_rtf, read_slide_variants,
+    read_word_variants,
 )
 from rag_fs.ingest.parsers.tabular import (
     cell_to_str, format_rows, read_csv, read_ods, read_xls, read_xlsx,
@@ -595,6 +596,7 @@ def test_parse_file_marks_a_broken_docm_as_failed(tmp_path):
         (".potm", read_slide_variants),
         (".ppsx", read_slide_variants),
         (".ppsm", read_slide_variants),
+        (".rtf", read_rtf),
     ],
 )
 def test_extension_is_registered(ext, reader):
@@ -826,3 +828,94 @@ def test_parse_file_marks_a_broken_potx_as_failed(tmp_path):
     doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
 
     assert doc.parse_status == "failed"
+
+
+RTF_GREEK_CP1253 = (
+    "{\\rtf1\\ansi\\ansicpg1253\\deff0{\\fonttbl{\\f0 Arial;}}\r\n"
+    "\\f0 \\'c3\\'e5\\'e9\\'e1 \\'f3\\'ef\\'f5\\par\r\n"
+    "\\par\r\n"
+    "Second paragraph\\line same paragraph, new line\\par\r\n"
+    "}"
+)
+EXPECTED_RTF = "Γεια σου\n\nSecond paragraph\nsame paragraph, new line"
+
+
+def write_rtf(tmp_path, content, name="doc.rtf", encoding="ascii"):
+    f = tmp_path / name
+    f.write_bytes(content.encode(encoding))
+    return f
+
+
+def test_read_rtf_greek_cp1253_escapes(tmp_path):
+    assert read_rtf(write_rtf(tmp_path, RTF_GREEK_CP1253)) == EXPECTED_RTF
+
+
+def test_read_rtf_greek_unicode_escapes(tmp_path):
+    rtf = r"{\rtf1\ansi\ansicpg1252\uc1 \u915?\u949?\u953?\u945? \u963?\u959?\u965?\par}"
+
+    assert read_rtf(write_rtf(tmp_path, rtf)) == "Γεια σου"
+
+
+def test_read_rtf_greek_written_directly_in_cp1253(tmp_path):
+    rtf = "{\\rtf1\\ansi\\ansicpg1253 Γεια σου κόσμε\\par}"
+
+    assert read_rtf(write_rtf(tmp_path, rtf, encoding="cp1253")) == "Γεια σου κόσμε"
+
+
+def test_read_rtf_strips_blank_lines_and_spaces_at_both_ends(tmp_path):
+    rtf = "\r\n  {\\rtf1\\ansi \\par\\par Text\\par\\par\\par}"
+
+    assert read_rtf(write_rtf(tmp_path, rtf)) == "Text"
+
+
+def test_read_rtf_empty_document(tmp_path):
+    assert read_rtf(write_rtf(tmp_path, r"{\rtf1\ansi}")) == ""
+
+
+def test_read_rtf_drops_pictures(tmp_path):
+    rtf = r"{\rtf1\ansi Before {\pict\pngblip\picw10\pich10 89504e470d0a1a0a0000}after\par}"
+
+    assert read_rtf(write_rtf(tmp_path, rtf)) == "Before after"
+
+
+def test_read_rtf_tables_stay_as_cells_with_bars(tmp_path):
+    rtf = (r"{\rtf1\ansi\trowd\cellx2000\cellx4000 Name\cell Grade\cell\row"
+           r"\trowd\cellx2000\cellx4000 Maria\cell 9\cell\row\pard After table\par}")
+
+    assert read_rtf(write_rtf(tmp_path, rtf)) == "Name|Grade|\nMaria|9|\nAfter table"
+
+
+@pytest.mark.parametrize("content", ["this is not an rtf file", "", "{\\rtfX not really}"])
+def test_read_rtf_rejects_files_that_are_not_rtf(tmp_path, content):
+    with pytest.raises(ValueError):
+        read_rtf(write_rtf(tmp_path, content))
+
+
+def test_parse_file_reads_rtf(tmp_path):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    write_rtf(root, RTF_GREEK_CP1253)
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "prose"
+    assert doc.raw_text == EXPECTED_RTF
+
+
+@pytest.mark.parametrize(
+    "content, status",
+    [
+        ("this is not an rtf file", "failed"),   
+        (r"{\rtf1\ansi}", "empty"),
+        ("", "failed"),                         
+    ],
+)
+def test_parse_file_rtf_status(tmp_path, content, status):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    write_rtf(root, content)
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.parse_status == status
