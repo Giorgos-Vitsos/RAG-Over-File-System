@@ -30,13 +30,32 @@ def plain_row(cells: list[str]) -> str:
 def find_header(rows: list[list[str]]) -> int:
     counts = []
     for row in rows[:HEADER_SEARCH_ROWS]:
-        counts.append(len([c for c in row if c]))#header is the row with the most (not empty) cells in the top HEADER_SEARCH_ROWS rows
-    return counts.index(max(counts))
+        counts.append(len([c for c in row if c]))
+    h=counts.index(max(counts))
+    widest=counts[h]#we find the row with the most (not empty) cells from the first HEADER_SEARCH_ROWS rows
+    first_data=-1#keeps the index of the first data row (not tile or header)
+    for i in range(len(counts)):
+        if any(looks_like_value(cell) for cell in rows[i]):
+            first_data=i
+            break
+    if first_data==-1: #if we have no data then the first widest is probably the header
+        return h
+    best=-1#otherwise we find the best match
+    i=first_data-1
+    while i>=0:#from the data row and above we look for the row that best matches
+        if counts[i]>=widest-1 and (best==-1 or counts[i]>counts[best]):
+            best=i
+        i=i-1
+    if best==-1:
+        return h
+    return best
 
+def looks_like_value(s:str)->bool:
+    return any(ch.isdigit() for ch in s) and not any(ch.isalpha() for ch in s)
 
-def format_rows(rows)->str:
+def format_rows(rows, header_rows: int = 0)->str:
     clean=[]
-    for row in rows:#it removes empty cells
+    for row in rows:#it removes empty rows
         cells=[]
         for c in row:
             cells.append(cell_to_str(c))
@@ -44,28 +63,36 @@ def format_rows(rows)->str:
             clean.append(cells)
     if not clean:
         return ""
-    h = find_header(clean)
-    if len([c for c in clean[h] if c]) < 2:#less than 2 cells not a real header so we just return without them
-        lines = []
-        for row in clean:
-            lines.append(plain_row(row))
-        return "\n".join(lines)
+    if header_rows>0:#the file says which rows are the header
+        first=0
+        h=min(header_rows,len(clean))-1
+    else:#otherwise we guess it
+        h=find_header(clean)
+        first=h#we only have 1 header here and its what we found
+        filled_cells=[c for c in clean[h] if c]
+        if len(filled_cells) < 2 or all(looks_like_value(cell) for cell in filled_cells):#less than 2 cells or only values are not a real header so we just return without them
+            lines = []
+            for row in clean:
+                lines.append(plain_row(row))
+            return "\n".join(lines)
     lines = []
-    for row in clean[:h]:#everything above the headers dont have them
+    for row in clean[:first]:#everything above the header has no column names
         lines.append(plain_row(row))
     header=[]
     max_width=max(len(row) for row in clean)#the longest row
-    for i in range(max_width):
-        if i<len(clean[h]):
-            possible_header=clean[h][i]#the header is either the real text or the number of the column
-            if possible_header:
-                header.append(possible_header)
-                continue
-        header.append(f"col{i+1}")
+    for i in range(max_width):#we fill the header list
+        names=[]
+        for row in clean[first:h+1]:#every header row
+            if i<len(row) and row[i] and row[i] not in names:#we dont add dupe names
+                names.append(row[i])
+        if names:
+            header.append(" - ".join(names))
+        else:
+            header.append(f"col{i+1}")#a column without a name keeps its position
     data_rows = clean[h + 1:]
     if not data_rows:
-        lines.append(plain_row(clean[h]))#if we dont have data then we return only the headers and whats above
-    
+        for row in clean[first:h+1]:#if we dont have data then we return the header rows as text
+            lines.append(plain_row(row))
     for row in data_rows:
         parts = []
         for name, value in zip(header, row):#we zip the header with the cell's value

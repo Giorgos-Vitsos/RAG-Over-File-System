@@ -22,7 +22,7 @@ from pptx.util import Inches as PptxInches
 
 from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
-from rag_fs.ingest.parsers import PARSERS, parse_file
+from rag_fs.ingest.parsers import PARSERS, parse_file, tabular
 from rag_fs.ingest.parsers.office import (
     format_shape, heading_level, read_docx, read_pptx, read_rtf, read_slide_variants,
     read_word_variants,
@@ -38,9 +38,8 @@ ALLOWED_STATUSES = {"ok", "ocr", "empty", "failed", "unsupported"}
 ALLOWED_CONTENT_TYPES = {"prose", "code", "tabular", "binary"}
 
 
+# writes the files into a corpus folder and parses them
 def parse_all(tmp_path, files):
-    """Write the given {name: bytes} files, scan them, and parse every one.
-    Returns {name: Document}."""
     root = tmp_path / "corpus"
     root.mkdir()
     for name, data in files.items():
@@ -52,12 +51,26 @@ def parse_all(tmp_path, files):
     return docs
 
 
+# same as parse_all for a single file
+def parse_one(tmp_path, name, data):
+    return parse_all(tmp_path, {name: data})[name]
+
+
+# makes a test file outside the corpus and returns its bytes
+def built(tmp_path, name, make):
+    f = tmp_path / name
+    make(f)
+    return f.read_bytes()
+
+
+# a small corpus with one file for each case parse_file has to handle
 @pytest.fixture
 def docs(tmp_path):
     return parse_all(tmp_path, {
         "notes.txt": "Γεια\r\nσου\rκόσμε".encode("utf-8"),
         "main.py": b"print(1)\n",
         "blank.md": b"  \n\n",
+        "empty.txt": b"",
         "data.zip": b"PK\x03\x04",
         "fake.txt": b"ELF\x00\x00\x01",
         "Makefile": b"all:\n\tgcc a.c\n",
@@ -66,53 +79,41 @@ def docs(tmp_path):
     })
 
 
-def test_text_file_is_ok_and_line_endings_are_normalized(docs):
-    doc = docs["notes.txt"]
-    assert doc.parse_status == "ok"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == "Γεια\nσου\nκόσμε"
+# status, content type and text for each file (None = not checked)
+@pytest.mark.parametrize("name, status, content_type, text", [
+    ("notes.txt", "ok", "prose", "Γεια\nσου\nκόσμε"),        # line endings normalized
+    ("main.py", "ok", "code", None),
+    ("blank.md", "empty", None, None),                       # whitespace only
+    ("empty.txt", "empty", None, None),                      # 0 bytes
+    ("data.zip", "unsupported", "binary", ""),               # known binary extension
+    ("fake.txt", "failed", "prose", ""),                     # known text extension, binary inside
+    ("weird.xyz", "unsupported", "binary", None),            # unknown extension, binary inside
+    ("Makefile", "ok", None, "all:\n\tgcc a.c\n"),           # no extension, read as text
+    ("old.txt", None, None, "Λογαριασμός ρεύματος"),         # old Greek encoding
+])
+def test_parse_file_status_type_and_text(docs, name, status, content_type, text):
+    doc = docs[name]
+    if status is not None:
+        assert doc.parse_status == status
+    if content_type is not None:
+        assert doc.content_type == content_type
+    if text is not None:
+        assert doc.raw_text == text
 
 
-def test_code_file_has_code_content_type(docs):
-    assert docs["main.py"].content_type == "code"
-    assert docs["main.py"].parse_status == "ok"
+# a file with no extension (Makefile) gets ext ""
+def test_file_without_extension_has_an_empty_ext(docs):
+    assert docs["Makefile"].ext == ""
 
 
-def test_whitespace_only_file_is_empty(docs):
-    assert docs["blank.md"].parse_status == "empty"
+# parse_file never makes up a status or a content type
+def test_only_known_labels_are_used(docs):
+    for doc in docs.values():
+        assert doc.parse_status in ALLOWED_STATUSES
+        assert doc.content_type in ALLOWED_CONTENT_TYPES
 
 
-def test_known_binary_extension_is_unsupported(docs):
-    doc = docs["data.zip"]
-    assert doc.parse_status == "unsupported"
-    assert doc.content_type == "binary"
-    assert doc.raw_text == ""
-
-
-def test_known_text_extension_that_is_binary_is_failed(docs):
-    doc = docs["fake.txt"]
-    assert doc.parse_status == "failed"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == ""
-
-
-def test_unknown_extension_that_is_binary_is_unsupported(docs):
-    doc = docs["weird.xyz"]
-    assert doc.parse_status == "unsupported"
-    assert doc.content_type == "binary"
-
-
-def test_file_without_extension_is_read_as_text(docs):
-    doc = docs["Makefile"]
-    assert doc.ext == ""
-    assert doc.parse_status == "ok"
-    assert "gcc" in doc.raw_text
-
-
-def test_old_greek_encoding_through_parse_file(docs):
-    assert docs["old.txt"].raw_text == "Λογαριασμός ρεύματος"
-
-
+# path, root and hash in the Document are the ones the scanner found
 def test_document_fields_come_from_the_scanned_file(tmp_path):
     root = tmp_path / "corpus"
     (root / "sub").mkdir(parents=True)
@@ -127,66 +128,102 @@ def test_document_fields_come_from_the_scanned_file(tmp_path):
     assert doc.ext == ".txt"
 
 
-def test_only_known_labels_are_used(docs):
-    for doc in docs.values():
-        assert doc.parse_status in ALLOWED_STATUSES
-        assert doc.content_type in ALLOWED_CONTENT_TYPES
-
-
+# a file that can't be parsed is logged and marked failed
 def test_failure_is_logged_not_raised(tmp_path, caplog):
     with caplog.at_level(logging.WARNING):
-        docs = parse_all(tmp_path, {"fake.txt": b"\x00\x01\x02"})
+        doc = parse_one(tmp_path, "fake.txt", b"\x00\x01\x02")
 
-    assert docs["fake.txt"].parse_status == "failed"
+    assert doc.parse_status == "failed"
     assert "fake.txt" in caplog.text
 
 
-@pytest.mark.parametrize(
-    "text, encoding",
-    [
-        ("Λογαριασμός ρεύματος Μαρτίου: 54€", "utf-8"),
-        ("Ο λογαριασμός του ρεύματος για τον Μάρτιο ήταν 54 ευρώ.", "cp1253"),
-        ("Λογαριασμός ρεύματος", "cp1253"),
-        ("Σημειώσεις", "cp1253"),
-        ("Café crème, déjà vu à Paris.", "cp1252"),
-        ("Γεια σου κόσμε", "utf-16"),
-    ],
-)
-def test_read_text_decodes_common_encodings(tmp_path, text, encoding):
+# the date of the file is kept even when it fails or is unsupported
+@pytest.mark.parametrize("name, data", [
+    ("notes.txt", "Γεια".encode()),        # read fine
+    ("broken.docx", b"not a zip"),         # failed: the date must still be there
+    ("song.mp3", b"\x00\x01"),             # unsupported: the date must still be there
+])
+def test_parse_file_keeps_the_last_modified_time(tmp_path, name, data):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    f = root / name
+    f.write_bytes(data)
+    when = datetime.datetime(2024, 3, 1, 14, 30).timestamp()
+    os.utime(f, (when, when))   # (access time, modification time)
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.last_modified == when
+
+
+# REPORT.DOCX is read like report.docx
+def test_parse_file_reads_upper_case_extensions(tmp_path):
+    d = docx.Document()
+    d.add_paragraph("Αναφορά")
+    data = built(tmp_path, "base.docx", lambda f: d.save(str(f)))
+
+    doc = parse_one(tmp_path, "REPORT.DOCX", data)
+
+    assert doc.parse_status == "ok"
+    assert doc.raw_text == "Αναφορά"
+
+
+# one read_text case: the text written in the given encoding
+def encoded(text, encoding, marks=()):
+    return pytest.param(text.encode(encoding), text, marks=marks, id=f"{encoding}: {text[:25]}")
+
+
+# greek text with english terms and the opposite
+MIXED_GREEK_ENGLISH = [
+    "The retrieval step uses BM25 and dense embeddings. "
+    "In the thesis we call it ανάκτηση πληροφορίας (information retrieval).",
+    "Η ανάκτηση γίνεται με BM25 και dense embeddings, και μετά re-ranking με cross-encoder.",
+    "Meeting notes for the project, room Αμφιθέατρο A, 10:00.",
+]
+
+
+# read_text finds the right encoding
+@pytest.mark.parametrize("data, expected", [
+    encoded("Λογαριασμός ρεύματος Μαρτίου: 54€", "utf-8"),
+    encoded("Ο λογαριασμός του ρεύματος για τον Μάρτιο ήταν 54 ευρώ.", "cp1253"),
+    encoded("Λογαριασμός ρεύματος", "cp1253"),
+    encoded("Σημειώσεις", "cp1253"),
+    encoded("Café crème, déjà vu à Paris.", "cp1252"),
+    encoded("Γεια σου κόσμε", "utf-16"),
+    encoded("Ναι", "cp1253", marks=pytest.mark.xfail(strict=True, reason="L28: too short to detect cp1253")),
+    encoded("Όχι", "cp1253"),
+    encoded("Άρτα", "cp1253"),
+    encoded("Χανιά", "cp1253"),
+    encoded("Ηράκλειο", "cp1253"),
+    encoded("Άνοιξη στην Ήπειρο, Ώρα για Ύδρα.", "iso8859_7",
+            marks=pytest.mark.xfail(strict=True, reason="L28: read as cp1253, so Ά becomes ¶")),
+    *[encoded(text, enc) for text in MIXED_GREEK_ENGLISH for enc in ("utf-8", "cp1253", "iso8859_7")],
+    pytest.param("\ufeffΓεια σου".encode("utf-8"), "Γεια σου", id="BOM removed"),
+    pytest.param(b"", "", id="empty file"),
+    pytest.param(b"a\r\nb", "a\r\nb", id="line endings kept (parse_file normalizes them)"),
+])
+def test_read_text(tmp_path, data, expected):
     f = tmp_path / "file.txt"
-    f.write_bytes(text.encode(encoding))
+    f.write_bytes(data)
 
-    assert read_text(f) == text
-
-
-def test_read_text_removes_bom(tmp_path):
-    f = tmp_path / "bom.txt"
-    f.write_bytes("﻿Γεια σου".encode("utf-8"))
-
-    assert read_text(f) == "Γεια σου"
+    assert read_text(f) == expected
 
 
-def test_read_text_empty_file(tmp_path):
-    f = tmp_path / "empty.txt"
-    f.write_bytes(b"")
+# a few windows bytes in a utf-8 file should not lose the greek
+@pytest.mark.xfail(strict=True, reason="L28: one bad byte makes the whole file fail")
+def test_read_text_utf8_with_stray_windows_quotes_keeps_the_greek(tmp_path):
+    f = tmp_path / "mixed.txt"
+    f.write_bytes("Σημειώσεις για την εξεταστική ".encode() + b"\x93quote\x94"
+                  + " και τα θέματα του Ιουνίου.".encode())
 
-    assert read_text(f) == ""
+    text = read_text(f)
+
+    assert "Σημειώσεις για την εξεταστική" in text
+    assert "θέματα του Ιουνίου" in text
 
 
-def test_read_text_keeps_line_endings(tmp_path):
-    f = tmp_path / "crlf.txt"
-    f.write_bytes(b"a\r\nb")
-
-    assert read_text(f) == "a\r\nb"
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        bytes(range(256)) * 4,
-        b"ELF\x00\x00\x01abc",
-    ],
-)
+# binary data is not accepted as text
+@pytest.mark.parametrize("data", [bytes(range(256)) * 4, b"ELF\x00\x00\x01abc"])
 def test_read_text_rejects_binary(tmp_path, data):
     f = tmp_path / "file.bin"
     f.write_bytes(data)
@@ -195,82 +232,167 @@ def test_read_text_rejects_binary(tmp_path, data):
         read_text(f)
 
 
-@pytest.mark.parametrize(
-    "value, expected",
-    [
-        (None, ""),
-        (datetime.datetime(2024, 3, 1), "2024-03-01"),
-        (datetime.datetime(2024, 3, 1, 14, 30), "2024-03-01 14:30:00"),
-        (54, "54"),
-        (54.0, "54"),         
-        (12.5, "12.5"),
-        ("  Ρεύμα  ", "Ρεύμα"),
-        ("line one\nline two", "line one / line two"),
-    ],
-)
+# how one cell value becomes text
+@pytest.mark.parametrize("value, expected", [
+    (None, ""),
+    (datetime.datetime(2024, 3, 1), "2024-03-01"),
+    (datetime.datetime(2024, 3, 1, 14, 30), "2024-03-01 14:30:00"),
+    (54, "54"),
+    (54.0, "54"),
+    (12.5, "12.5"),
+    ("  Ρεύμα  ", "Ρεύμα"),
+    ("line one\nline two", "line one / line two"),
+    ("line one\r\nline two", "line one / line two"),   # Windows
+    ("line one\rline two", "line one / line two"),     # old Mac
+])
 def test_cell_to_str(value, expected):
     assert cell_to_str(value) == expected
 
 
-def test_simple_table_first_row_is_header():
+# what counts as a value and what as a name
+@pytest.mark.parametrize("cell, expected", [
+    ("180000", True), ("54,5", True), ("2024-03-01", True), ("01/03/2024", True), ("€54", True),
+    ("ΗΥ100", False), ("Όνομα", False), ("", False), ("N/A", False),
+])
+def test_looks_like_value(cell, expected):
+    assert tabular.looks_like_value(cell) == expected
+
+
+N = None
+
+# (rows, header_rows, expected text)
+FORMAT_ROWS = [
+    pytest.param([("Ημερομηνία", "Κατηγορία", "Ποσό"), (datetime.datetime(2024, 3, 1), "Ρεύμα", 54),
+                  (None, None, None), ("2024-04-01", "Νερό", 12.5)], 0,
+                 "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
+                 "Ημερομηνία: 2024-04-01; Κατηγορία: Νερό; Ποσό: 12.5",
+                 id="first row is the header, empty rows dropped"),
+    pytest.param([[N, N, N, N, N, N, N],
+                  [N, "CS-209: English IV, Spring 2026", N, N, N, N, N],
+                  [N, N, "TEAM MEMBERS", "Paper", N, "Phases", N],
+                  [N, "TEAM #", "NAMES & AM", "Link", "A+B", "C+D", "TOTAL"],
+                  [N, 1, "Aggelos Papanikolaou - 5601 (leader)\nEirini Lyroni - 5690",
+                   "https://doi.org/10.1145/3635636.3656185", N, N, N]], 0,
+                 "CS-209: English IV, Spring 2026\n"
+                 "TEAM MEMBERS | Paper | Phases\n"
+                 "TEAM #: 1; NAMES & AM: Aggelos Papanikolaou - 5601 (leader) / Eirini Lyroni - 5690; "
+                 "Link: https://doi.org/10.1145/3635636.3656185",
+                 id="title rows above the header are kept as text"),
+    pytest.param([("Ημερομηνία", "Κατηγορία", None), ("2024-03-15", None, 20)], 0,
+                 "Ημερομηνία: 2024-03-15; col3: 20", id="empty header cell gets a column name"),
+    pytest.param([("A", "B", "C"), ("1",)], 0, "A: 1", id="short rows do not crash"),
+    pytest.param([("Προϊόν", "Ποσότητα", "Τιμή")], 0, "Προϊόν | Ποσότητα | Τιμή", id="only the header"),
+    pytest.param([("Ψώνια",), ("γάλα",), ("ψωμί",)], 0, "Ψώνια\nγάλα\nψωμί",
+                 id="single column is not a table"),
+    pytest.param([], 0, "", id="empty sheet"),
+    pytest.param([(None, None), ("", "")], 0, "", id="sheet of empty cells"),
+    pytest.param([("Ημερομηνία", "Περιγραφή"), ("2024-03-01", "Ρεύμα", "πληρώθηκε")], 0,
+                 "Ημερομηνία: 2024-03-01; Περιγραφή: Ρεύμα; col3: πληρώθηκε",
+                 id="wider data row with a date does not become the header"),
+    pytest.param([("Οικογενειακά", "έξοδα"), ("", "Κατηγορία", "Ποσό"), ("2024-03-01", "Ρεύμα", "54")], 0,
+                 "Οικογενειακά | έξοδα\ncol1: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54",
+                 id="climbing stops at the header, not at a title above it"),
+    pytest.param([("Οικογενειακά", "έξοδα"), ("", "Κατηγορία", "Ποσό"), ("2024-03-01", "Ρεύμα")], 0,
+                 "Οικογενειακά | έξοδα\ncol1: 2024-03-01; Κατηγορία: Ρεύμα",
+                 id="title as full as the header and the data"),
+    pytest.param([("Όνομα", "Βαθμός"), ("Μαρία", "9"), ("Νίκος", "απών"), ("Ελένη", "8")], 0,
+                 "Όνομα: Μαρία; Βαθμός: 9\nΌνομα: Νίκος; Βαθμός: απών\nΌνομα: Ελένη; Βαθμός: 8",
+                 id="data row with only words among the data"),
+    pytest.param([("Περιοχή", "2023", "2024"), ("Κρήτη", "άγνωστο", "άγνωστο"), ("Αττική", "120", "150")], 0,
+                 "Περιοχή: Κρήτη; 2023: άγνωστο; 2024: άγνωστο\nΠεριοχή: Αττική; 2023: 120; 2024: 150",
+                 id="header with years followed by a row of words"),
+    pytest.param([("Όνομα", "Μάθημα", "Βαθμός"), ("Χειμερινό", "εξάμηνο"), ("Μαρία", "ΗΥ100", "9")], 0,
+                 "Όνομα: Χειμερινό; Μάθημα: εξάμηνο\nΌνομα: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9",
+                 id="two-cell section row does not hide the header above it"),
+    pytest.param([("Πωλήσεις",), ("Περιοχή", "2023", "2024"), ("Κρήτη", "120", "150")], 0,
+                 "Πωλήσεις\nΠεριοχή: Κρήτη; 2023: 120; 2024: 150",
+                 id="one-cell title above a header with years"),
+    pytest.param([("", "Μάθημα", "Βαθμός"), ("Χειμερινό",), ("Μαρία", "ΗΥ100", "9")], 0,
+                 "col1: Χειμερινό\ncol1: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9",
+                 id="one-cell section row between the header and the data"),
+    pytest.param([("Περιοχή", "2023", "2024"), ("Κρήτη", "120", "150")], 0,
+                 "Περιοχή: Κρήτη; 2023: 120; 2024: 150", id="years in the header"),
+    pytest.param([("Εξάμηνο", "Χειμερινό"), ("Όνομα", "Μάθημα", "Βαθμός"), ("Μαρία", "ΗΥ100", "9")], 0,
+                 "Εξάμηνο | Χειμερινό\nΌνομα: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9",
+                 id="subtitle of words above the header stays a subtitle"),
+    pytest.param([("Εξάμηνο", "2024"), ("Όνομα", "Μάθημα", "Βαθμός"), ("Μαρία", "ΗΥ100", "9")], 0,
+                 "Εξάμηνο | 2024\nΌνομα: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9",
+                 id="subtitle with a year above the header stays a subtitle"),
+    pytest.param([("Όνομα", "Επώνυμο"), ("Μαρία", "Παπαδάκη"), ("Νίκος", "Κωστάκης")], 0,
+                 "Όνομα: Μαρία; Επώνυμο: Παπαδάκη\nΌνομα: Νίκος; Επώνυμο: Κωστάκης", id="only words"),
+    pytest.param([("Μαρία", "9"), ("Νίκος", "8", "άριστα")], 0, "Μαρία | 9\nΝίκος | 8 | άριστα",
+                 id="data rows without a header stay plain"),
+    pytest.param([("2024", "120", "340"), ("2025", "150", "380")], 0, "2024 | 120 | 340\n2025 | 150 | 380",
+                 id="only numbers: no header"),
+    pytest.param([("2024", "120", ""), ("2025", "150", "")], 0, "2024 | 120\n2025 | 150",
+                 id="only numbers with an empty trailing column (csv lines ending in a comma)"),
+    pytest.param([("", "2023", "2024"), ("Κρήτη", "120", "150"), ("Αττική", "300", "320")], 0,
+                 "col1: Κρήτη; 2023: 120; 2024: 150\ncol1: Αττική; 2023: 300; 2024: 320",
+                 marks=pytest.mark.xfail(strict=True, reason="L29: pivot header (empty corner + years)"),
+                 id="pivot table: empty corner and years"),
+    pytest.param([("2023", "2024"), ("120", "150")], 1, "2023: 120; 2024: 150",
+                 id="header marked by the file is trusted even if numeric"),
+    pytest.param([("Όνομα", "Βαθμοί", "Βαθμοί"), ("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8")], 2,
+                 "Όνομα: Μαρία; Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8",
+                 id="two header rows are joined per column"),
+    pytest.param([("Όνομα", "Βαθμός"), ("Μαρία", "9")], 5, "Όνομα | Βαθμός\nΜαρία | 9",
+                 id="header_rows larger than the table"),
+]
+
+
+# a table becomes text
+@pytest.mark.parametrize("rows, header_rows, expected", FORMAT_ROWS)
+def test_format_rows(rows, header_rows, expected):
+    if header_rows:
+        assert format_rows(rows, header_rows=header_rows) == expected
+    else:
+        assert format_rows(rows) == expected
+
+
+# an extra value far down the table becomes col3
+def test_format_rows_keeps_values_beyond_the_header_far_down_the_table():
     rows = [
-        ("Ημερομηνία", "Κατηγορία", "Ποσό"),
-        (datetime.datetime(2024, 3, 1), "Ρεύμα", 54),
-        (None, None, None),
-        ("2024-04-01", "Νερό", 12.5),
+        ("Όνομα", "Βαθμός"),
+        *[(f"Φοιτητής {i}", "8") for i in range(1, 11)],
+        ("Μαρία", "9", "άριστα"),
     ]
-    assert format_rows(rows) == (
-        "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
-        "Ημερομηνία: 2024-04-01; Κατηγορία: Νερό; Ποσό: 12.5"
-    )
+
+    assert format_rows(rows).splitlines()[-1] == "Όνομα: Μαρία; Βαθμός: 9; col3: άριστα"
 
 
-def test_title_rows_above_the_header_are_kept_as_text():
-    N = None
-    rows = [
-        [N, N, N, N, N, N, N],
-        [N, "CS-209: English IV, Spring 2026", N, N, N, N, N],
-        [N, N, "TEAM MEMBERS", "Paper", N, "Phases", N],
-        [N, "TEAM #", "NAMES & AM", "Link", "A+B", "C+D", "TOTAL"],
-        [N, 1, "Aggelos Papanikolaou - 5601 (leader)\nEirini Lyroni - 5690",
-         "https://doi.org/10.1145/3635636.3656185", N, N, N],
-    ]
-    assert format_rows(rows) == (
-        "CS-209: English IV, Spring 2026\n"
-        "TEAM MEMBERS | Paper | Phases\n"
-        "TEAM #: 1; NAMES & AM: Aggelos Papanikolaou - 5601 (leader) / Eirini Lyroni - 5690; "
-        "Link: https://doi.org/10.1145/3635636.3656185"
-    )
+# csv and tsv files
+@pytest.mark.parametrize("name, data, expected", [
+    ("greek.csv", "Ημερομηνία;Κατηγορία;Ποσό\n2024-03-01;Ρεύμα;54,5\n".encode("cp1253"),
+     "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54,5"),
+    ("address.csv", b'date,address,amount\n2024-03-01,"Knossou 5, Heraklion",54\n',
+     "date: 2024-03-01; address: Knossou 5, Heraklion; amount: 54"),
+    ("table.tsv", b"a\tb\n1\t2\n", "a: 1; b: 2"),
+    ("names.csv", b"name\nmaria\ngiorgos\n", "name\nmaria\ngiorgos"),
+    ("excel.csv", "Όνομα;Βαθμός\r\nΜαρία;9\r\n".encode("utf-8-sig"), "Όνομα: Μαρία; Βαθμός: 9"),  # with BOM
+    ("lf.csv", b'name,comment\r\nmaria,"first line\nsecond line"\r\n',      # Excel, LibreOffice
+     "name: maria; comment: first line / second line"),
+    ("crlf.csv", b'name,comment\r\nmaria,"first line\r\nsecond line"\r\n',  # Windows editor
+     "name: maria; comment: first line / second line"),
+    ("bills.csv", "Περιγραφή;Ποσό\n\"Ρεύμα, νερό, τηλέφωνο\";54\n\"Ενοίκιο, κοινόχρηστα\";400\n".encode(),
+     "Περιγραφή: Ρεύμα, νερό, τηλέφωνο; Ποσό: 54\nΠεριγραφή: Ενοίκιο, κοινόχρηστα; Ποσό: 400"),
+    # pandas index column
+    ("pandas.csv", b",city,population\n0,Heraklion,180000\n1,Chania,110000\n",
+     "col1: 0; city: Heraklion; population: 180000\ncol1: 1; city: Chania; population: 110000"),
+    ("pandas_gap.csv", b",city,population\n0,Heraklion,\n1,Chania,110000\n",
+     "col1: 0; city: Heraklion\ncol1: 1; city: Chania; population: 110000"),
+    ("ragged.csv", b"name,grade\nmaria,9,excellent\n", "name: maria; grade: 9; col3: excellent"),
+])
+def test_read_csv(tmp_path, name, data, expected):
+    f = tmp_path / name
+    f.write_bytes(data)
+
+    assert read_csv(f) == expected
 
 
-def test_empty_header_cell_gets_a_column_name():
-    rows = [("Ημερομηνία", "Κατηγορία", None), ("2024-03-15", None, 20)]
-    assert format_rows(rows) == "Ημερομηνία: 2024-03-15; col3: 20"
-
-
-def test_short_rows_do_not_crash():
-    rows = [("A", "B", "C"), ("1",)]
-    assert format_rows(rows) == "A: 1"
-
-
-def test_only_header_is_kept():
-    assert format_rows([("Προϊόν", "Ποσότητα", "Τιμή")]) == "Προϊόν | Ποσότητα | Τιμή"
-
-
-def test_single_column_is_not_treated_as_a_table():
-    rows = [("Ψώνια",), ("γάλα",), ("ψωμί",)]
-    assert format_rows(rows) == "Ψώνια\nγάλα\nψωμί"
-
-
-def test_empty_sheet_gives_empty_text():
-    assert format_rows([]) == ""
-    assert format_rows([(None, None), ("", "")]) == ""
-
-
+# writes an .xlsx file, sheets is a list of (sheet name, rows)
 def make_xlsx(path, sheets):
-    """Write an .xlsx file. `sheets` is a list of (sheet name, rows)."""
     book = openpyxl.Workbook()
-    book.remove(book.worksheets[0]) 
+    book.remove(book.worksheets[0])
     for name, rows in sheets:
         sheet = book.create_sheet(name)
         for row in rows:
@@ -278,19 +400,15 @@ def make_xlsx(path, sheets):
     book.save(path)
 
 
+# writes an .ods file the same way
 def make_ods(path, sheets):
-    """Write an .ods file. `sheets` is a list of (sheet name, rows)."""
     with pd.ExcelWriter(path, engine="odf") as writer:
         for name, rows in sheets:
             pd.DataFrame(rows).to_excel(writer, sheet_name=name, header=False, index=False)
 
 
-EXPENSES = [
-    ["Ημερομηνία", "Κατηγορία", "Ποσό"],
-    [datetime.datetime(2024, 3, 1), "Ρεύμα", 54],
-]
+EXPENSES = [["Ημερομηνία", "Κατηγορία", "Ποσό"], [datetime.datetime(2024, 3, 1), "Ρεύμα", 54]]
 INCOME = [["Μήνας", "Ποσό"], ["Μάρτιος", 1200]]
-
 EXPECTED_TWO_SHEETS = (
     "# Sheet: Έξοδα\n"
     "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
@@ -298,8 +416,17 @@ EXPECTED_TWO_SHEETS = (
     "# Sheet: Έσοδα\n"
     "Μήνας: Μάρτιος; Ποσό: 1200"
 )
+EXPECTED_XLS = (
+    "# Sheet: Έξοδα\n"
+    "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
+    "Ημερομηνία: 2024-04-01; Κατηγορία: Νερό; Ποσό: 12.5\n"
+    "\n"
+    "# Sheet: Έσοδα\n"
+    "Μήνας: Μάρτιος; Ποσό: 1200"
+)
 
 
+# every sheet becomes a block with its name, empty sheets are left out
 def test_read_xlsx_all_sheets_and_skips_empty_ones(tmp_path):
     f = tmp_path / "book.xlsx"
     make_xlsx(f, [("Έξοδα", EXPENSES), ("Κενό", []), ("Έσοδα", INCOME)])
@@ -307,6 +434,7 @@ def test_read_xlsx_all_sheets_and_skips_empty_ones(tmp_path):
     assert read_xlsx(f) == EXPECTED_TWO_SHEETS
 
 
+# the same for an .ods file
 def test_read_ods_all_sheets(tmp_path):
     f = tmp_path / "book.ods"
     rows = [["Ημερομηνία", "Κατηγορία", "Ποσό"], ["2024-03-01", "Ρεύμα", 54]]
@@ -315,46 +443,52 @@ def test_read_ods_all_sheets(tmp_path):
     assert read_ods(f) == EXPECTED_TWO_SHEETS
 
 
-@pytest.mark.parametrize(
-    "name, data, expected",
-    [
-        (  
-            "greek.csv",
-            "Ημερομηνία;Κατηγορία;Ποσό\n2024-03-01;Ρεύμα;54,5\n".encode("cp1253"),
-            "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54,5",
-        ),
-        (   
-            "address.csv",
-            b'date,address,amount\n2024-03-01,"Knossou 5, Heraklion",54\n',
-            "date: 2024-03-01; address: Knossou 5, Heraklion; amount: 54",
-        ),
-        (
-            "table.tsv",
-            b"a\tb\n1\t2\n",
-            "a: 1; b: 2",
-        ),
-        (   
-            "names.csv",
-            b"name\nmaria\ngiorgos\n",
-            "name\nmaria\ngiorgos",
-        ),
-    ],
-)
-def test_read_csv(tmp_path, name, data, expected):
-    f = tmp_path / name
-    f.write_bytes(data)
-
-    assert read_csv(f) == expected
+# old .xls file: dates and numbers come out like in xlsx
+def test_read_xls_dates_numbers_and_sheets():
+    assert read_xls(FIXTURES / "expenses.xls") == EXPECTED_XLS
 
 
-def test_read_xlsx_raises_on_a_broken_file(tmp_path):
-    f = tmp_path / "broken.xlsx"
-    f.write_bytes(b"this is not a zip file")
+# a line break inside an excel cell becomes " / "
+def test_read_xlsx_cell_with_windows_line_break(tmp_path):
+    f = tmp_path / "notes.xlsx"
+    make_xlsx(f, [("Σημειώσεις", [["Όνομα", "Σχόλιο"], ["Μαρία", "πρώτη γραμμή\r\nδεύτερη γραμμή"]])])
 
-    with pytest.raises(Exception):
-        read_xlsx(f)
+    assert read_xlsx(f) == "# Sheet: Σημειώσεις\nΌνομα: Μαρία; Σχόλιο: πρώτη γραμμή / δεύτερη γραμμή"
 
 
+# for a formula we take the result excel saved, not the formula
+def test_read_xlsx_formula_uses_the_value_excel_saved(tmp_path):
+    book = openpyxl.Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Τιμές"
+    sheet.append(["Τεμάχια", "Τιμή", "Σύνολο"])
+    sheet.append([2, 5, "=A2*B2"])
+    plain = tmp_path / "plain.xlsx"
+    book.save(plain)
+    # add the result that excel saves next to the formula
+    f = tmp_path / "formula.xlsx"
+    with zipfile.ZipFile(plain) as src, zipfile.ZipFile(f, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                assert b"<f>A2*B2</f><v></v>" in data
+                data = data.replace(b"<f>A2*B2</f><v></v>", b"<f>A2*B2</f><v>10</v>")
+            dst.writestr(item, data)
+
+    assert read_xlsx(f) == "# Sheet: Τιμές\nΤεμάχια: 2; Τιμή: 5; Σύνολο: 10"
+
+
+# a real date cell in ods should look like in xlsx, without 00:00:00
+@pytest.mark.xfail(strict=True, reason="L31: ods dates come out with 00:00:00")
+def test_read_ods_real_date_cells(tmp_path):
+    f = tmp_path / "dates.ods"
+    make_ods(f, [("Έξοδα", [["Ημερομηνία", "Ποσό"], [datetime.datetime(2024, 3, 1), 54]])])
+
+    assert read_ods(f) == "# Sheet: Έξοδα\nΗμερομηνία: 2024-03-01; Ποσό: 54"
+
+
+# parse_file sends xlsx, ods and csv to the table readers
 def test_parse_file_uses_the_tabular_readers(tmp_path):
     root = tmp_path / "corpus"
     root.mkdir()
@@ -374,63 +508,99 @@ def test_parse_file_uses_the_tabular_readers(tmp_path):
         assert doc.parse_status == "ok"
 
 
-def test_parse_file_marks_a_broken_xlsx_as_failed(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "broken.xlsx").write_bytes(b"this is not a zip file")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "failed"
-    assert doc.content_type == "tabular"
-
-
-EXPECTED_XLS = (
-    "# Sheet: Έξοδα\n"
-    "Ημερομηνία: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54\n"
-    "Ημερομηνία: 2024-04-01; Κατηγορία: Νερό; Ποσό: 12.5\n"
-    "\n"
-    "# Sheet: Έσοδα\n"
-    "Μήνας: Μάρτιος; Ποσό: 1200"
+GRADES = [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Νίκος", "απαλλαγή", "")]
+EXPECTED_MERGED = (
+    "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\n"
+    "Όνομα: Νίκος; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή"
 )
+MERGED = pytest.mark.xfail(strict=True, reason="L30: the covered cell is read as empty")
 
 
-def test_read_xls_dates_numbers_and_sheets():
-    assert read_xls(FIXTURES / "expenses.xls") == EXPECTED_XLS
+# merged cells in a word table
+def test_read_docx_merged_cells(tmp_path):
+    d = docx.Document()
+    t = d.add_table(rows=3, cols=3)
+    for r, row in enumerate(GRADES):
+        for c, value in enumerate(row):
+            t.cell(r, c).text = value
+    t.cell(2, 1).merge(t.cell(2, 2)).text = "απαλλαγή"
+    f = tmp_path / "merged.docx"
+    d.save(str(f))
+
+    assert read_docx(f) == EXPECTED_MERGED
 
 
-def test_parse_file_reads_xls(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "expenses.xls").write_bytes((FIXTURES / "expenses.xls").read_bytes())
+# merged cells in a powerpoint table
+@MERGED
+def test_read_pptx_merged_cells(tmp_path):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    t = slide.shapes.add_table(3, 3, PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(2)).table
+    for r, row in enumerate(GRADES):
+        for c, value in enumerate(row):
+            t.cell(r, c).text = value
+    t.cell(2, 1).merge(t.cell(2, 2))
+    f = tmp_path / "merged.pptx"
+    p.save(str(f))
 
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "ok"
-    assert doc.content_type == "tabular"
-    assert doc.raw_text == EXPECTED_XLS
+    assert read_pptx(f) == "# Slide 1\n\n" + EXPECTED_MERGED
 
 
-@pytest.mark.parametrize(
-    "style, level",
-    [
-        ("Title", 1),
-        ("Heading 1", 1),
-        ("Heading 2", 2),
-        ("Heading 4", 4),
-        ("Heading 9", 9),
-        ("Normal", 0),
-        ("Caption", 0),
-        ("Heading", 0),       
-        ("Heading Char", 0),   
-    ],
-)
+# merged cells in excel, across and down
+@MERGED
+@pytest.mark.parametrize("rows, merge, expected", [
+    (GRADES, "B3:C3", EXPECTED_MERGED),
+    ([("Κατηγορία", "Μήνας", "Ποσό"), ("Ρεύμα", "Μάρτιος", 54), (None, "Απρίλιος", 60)], "A2:A3",
+     "Κατηγορία: Ρεύμα; Μήνας: Μάρτιος; Ποσό: 54\nΚατηγορία: Ρεύμα; Μήνας: Απρίλιος; Ποσό: 60"),
+], ids=["across", "down"])
+def test_read_xlsx_merged_cells(tmp_path, rows, merge, expected):
+    book = openpyxl.Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Φύλλο"
+    for row in rows:
+        sheet.append(row)
+    sheet.merge_cells(merge)
+    f = tmp_path / "merged.xlsx"
+    book.save(f)
+
+    assert read_xlsx(f) == "# Sheet: Φύλλο\n" + expected
+
+
+# merged cells in ods
+@MERGED
+def test_read_ods_merged_cells(tmp_path):
+    doc = OpenDocumentSpreadsheet()
+    table = OdfTable(name="Βαθμοί")
+    for row in GRADES:
+        tr = TableRow()
+        for c, value in enumerate(row):
+            if row[0] == "Νίκος" and c == 2:
+                tr.addElement(CoveredTableCell())
+                continue
+            span = 2 if row[0] == "Νίκος" and c == 1 else 1
+            cell = TableCell(valuetype="string", numbercolumnsspanned=span)
+            cell.addElement(OdfP(text=value))
+            tr.addElement(cell)
+        table.addElement(tr)
+    doc.spreadsheet.addElement(table)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    f = tmp_path / "merged.ods"
+    doc.save(str(f))
+
+    assert read_ods(f) == "# Sheet: Βαθμοί\n" + EXPECTED_MERGED
+
+
+# word style name to heading level (0 means not a heading)
+@pytest.mark.parametrize("style, level", [
+    ("Title", 1), ("Heading 1", 1), ("Heading 2", 2), ("Heading 4", 4), ("Heading 9", 9),
+    ("Normal", 0), ("Caption", 0), ("Heading", 0), ("Heading Char", 0),
+])
 def test_heading_level(style, level):
     assert heading_level(style) == level
 
 
+# a word document with everything read_docx has to handle
 def make_docx(path):
-    """A Word document with every case read_docx has to handle."""
     image = path.parent / "img.png"
     Image.new("RGB", (60, 30), "white").save(image)
 
@@ -445,7 +615,8 @@ def make_docx(path):
     doc.add_heading("Μέθοδος", level=2)
     doc.add_picture(str(image), width=Inches(1))
     doc.inline_shapes[-1]._inline.docPr.set("descr", "Αρχιτεκτονική του συστήματος")
-    doc.add_picture(str(image), width=Inches(1))   
+    doc.add_picture(str(image), width=Inches(1))
+    doc.inline_shapes[-1]._inline.docPr.set("descr", "")   # empty alt text
     doc.add_paragraph("Εικόνα 1: Η ροή των δεδομένων", style="Caption")
     doc.add_heading("Λεπτομέρειες", level=4)
     doc.add_paragraph("Τελευταία παράγραφος.")
@@ -470,171 +641,25 @@ EXPECTED_DOCX = (
     "Τελευταία παράγραφος."
 )
 
-
-def test_read_docx_headings_tables_images_in_order(tmp_path):
-    f = tmp_path / "doc.docx"
-    make_docx(f)
-
-    assert read_docx(f) == EXPECTED_DOCX
+LAYOUT_TITLE_AND_CONTENT = 1
+LAYOUT_TITLE_ONLY = 5
+LAYOUT_BLANK = 6
 
 
-def test_read_docx_empty_document(tmp_path):
-    f = tmp_path / "empty.docx"
-    docx.Document().save(str(f))
-
-    assert read_docx(f) == ""
-
-
-def test_parse_file_reads_docx(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    make_docx(root / "doc.docx")
-    (root / "img.png").unlink()   
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "ok"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == EXPECTED_DOCX
-
-
-def test_parse_file_marks_a_broken_docx_as_failed(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "broken.docx").write_bytes(b"this is not a zip file")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "failed"
-
-
-DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
-VARIANT_CONTENT_TYPES = {
-    ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
-    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
-    ".dotm": "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
-}
-
-
-def make_word_variant(path):
-    """Build the test .docx, then save it as `path` with the label of its extension
-    (.docm/.dotx/.dotm) in [Content_Types].xml - which is all Word changes."""
-    base = path.parent / "base.docx"
-    make_docx(base)
-    content_type = VARIANT_CONTENT_TYPES[path.suffix]
-    with zipfile.ZipFile(base) as src, zipfile.ZipFile(path, "w") as dst:
-        for item in src.infolist():
-            data = src.read(item.filename)
-            if item.filename == "[Content_Types].xml":
-                data = data.replace(DOCX_CONTENT_TYPE.encode(), content_type.encode())
-            dst.writestr(item, data)
-    base.unlink()
-    (path.parent / "img.png").unlink()
-
-
-@pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
-def test_read_docx_rejects_word_variants(tmp_path, ext):
-    f = tmp_path / f"doc{ext}"
-    make_word_variant(f)
-
-    with pytest.raises(ValueError, match="not a Word file"):
-        read_docx(f)
-
-
-@pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
-def test_read_word_variants_gives_same_text_as_docx(tmp_path, ext):
-    f = tmp_path / f"doc{ext}"
-    make_word_variant(f)
-
-    assert read_word_variants(f) == EXPECTED_DOCX
-
-
-def test_read_word_variants_leaves_the_file_on_disk_unchanged(tmp_path):
-    f = tmp_path / "doc.docm"
-    make_word_variant(f)
-    before = f.read_bytes()
-
-    read_word_variants(f)
-
-    assert f.read_bytes() == before
-
-
-def test_read_word_variants_also_reads_a_plain_docx(tmp_path):
-    f = tmp_path / "doc.docx"
-    make_docx(f)
-
-    assert read_word_variants(f) == EXPECTED_DOCX
-
-
-@pytest.mark.parametrize("ext", [".docm", ".dotx", ".dotm"])
-def test_parse_file_reads_word_variants(tmp_path, ext):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    make_word_variant(root / f"doc{ext}")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "ok"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == EXPECTED_DOCX
-
-
-def test_parse_file_marks_a_broken_docm_as_failed(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "broken.docm").write_bytes(b"this is not a zip file")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "failed"
-
-
-@pytest.mark.parametrize(
-    "ext, reader",
-    [
-        (".markdown", read_text),
-        (".docx", read_docx),
-        (".docm", read_word_variants),
-        (".dotx", read_word_variants),
-        (".dotm", read_word_variants),
-        (".pptx", read_pptx),
-        (".pptm", read_pptx),
-        (".potx", read_slide_variants),
-        (".potm", read_slide_variants),
-        (".ppsx", read_slide_variants),
-        (".ppsm", read_slide_variants),
-        (".rtf", read_rtf),
-    ],
-)
-def test_extension_is_registered(ext, reader):
-    assert PARSERS.get(ext) is reader
-
-
-def test_parse_file_reads_markdown_extension(tmp_path):
-    docs = parse_all(tmp_path, {"notes.markdown": "# Σημειώσεις\n\nΚείμενο.".encode()})
-
-    assert docs["notes.markdown"].parse_status == "ok"
-    assert docs["notes.markdown"].content_type == "prose"
-    assert docs["notes.markdown"].raw_text == "# Σημειώσεις\n\nΚείμενο."
-
-
-LAYOUT_TITLE_AND_CONTENT = 1  
-LAYOUT_TITLE_ONLY = 5          
-LAYOUT_BLANK = 6               
-
-
+# sets the alt text of a picture where powerpoint keeps it
 def set_alt_text(shape, text):
     shape._element.xpath("./*/p:cNvPr")[0].set("descr", text)
 
 
+# writes the speaker notes of a slide
 def set_notes(slide, text):
     frame = slide.notes_slide.notes_text_frame
     assert frame is not None
     frame.text = text
 
 
+# a presentation with everything read_pptx has to handle
 def make_pptx(path):
-    """A presentation with every case read_pptx has to handle."""
     image = path.parent / "img.png"
     Image.new("RGB", (60, 30), "white").save(image)
     inch = PptxInches(1)
@@ -649,7 +674,7 @@ def make_pptx(path):
     assert isinstance(body, PptxShape)
     body.text_frame.text = "Πρώτη κουκκίδα"
     body.text_frame.add_paragraph().text = "Δεύτερη κουκκίδα"
-    slide.shapes.add_textbox(inch, PptxInches(5), inch, inch)         
+    slide.shapes.add_textbox(inch, PptxInches(5), inch, inch)          # empty text box
     set_notes(slide, "να πω για το dataset")
 
     slide = presentation.slides.add_slide(presentation.slide_layouts[LAYOUT_BLANK])
@@ -691,28 +716,97 @@ EXPECTED_PPTX = (
     "# Slide 3"
 )
 
-
-def test_read_pptx_slides_titles_tables_images_groups_notes(tmp_path):
-    f = tmp_path / "deck.pptx"
-    make_pptx(f)
-
-    assert read_pptx(f) == EXPECTED_PPTX
-
-
-def test_read_pptx_does_not_repeat_the_title(tmp_path):
-    f = tmp_path / "deck.pptx"
-    make_pptx(f)
-
-    assert read_pptx(f).count("Εισαγωγή") == 1
-
-
-def test_read_pptx_empty_presentation(tmp_path):
-    f = tmp_path / "empty.pptx"
-    pptx.Presentation().save(str(f))
-
-    assert read_pptx(f) == ""
+# not imported from office.py, so a typo there is caught
+DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
+VARIANT_CONTENT_TYPES = {
+    ".docm": "application/vnd.ms-word.document.macroEnabled.main+xml",
+    ".dotx": "application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml",
+    ".dotm": "application/vnd.ms-word.template.macroEnabledTemplate.main+xml",
+    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
+    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
+    ".potm": "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
+    ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml",
+    ".ppsm": "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml",
+}
+WORD_VARIANTS = [".docm", ".dotx", ".dotm"]
+SLIDE_VARIANTS_PPTX_REFUSES = [".potx", ".potm", ".ppsx", ".ppsm"]
 
 
+# a variant is the same file with another label in [Content_Types].xml
+def make_variant(path):
+    is_word = path.suffix in WORD_VARIANTS
+    base = path.with_name("base" + (".docx" if is_word else ".pptx"))
+    (make_docx if is_word else make_pptx)(base)
+    main = DOCX_CONTENT_TYPE if is_word else PPTX_CONTENT_TYPE
+    with zipfile.ZipFile(base) as src, zipfile.ZipFile(path, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "[Content_Types].xml":
+                data = data.replace(main.encode(), VARIANT_CONTENT_TYPES[path.suffix].encode())
+            dst.writestr(item, data)
+    base.unlink()
+
+
+# (extension, maker, reader, expected text)
+READERS = [
+    (".docx", make_docx, read_docx, EXPECTED_DOCX),
+    (".docx", make_docx, read_word_variants, EXPECTED_DOCX),   # also reads a plain docx
+    *[(ext, make_variant, read_word_variants, EXPECTED_DOCX) for ext in WORD_VARIANTS],
+    (".pptx", make_pptx, read_pptx, EXPECTED_PPTX),
+    (".pptm", make_variant, read_pptx, EXPECTED_PPTX),         # python-pptx accepts .pptm itself
+    *[(ext, make_variant, read_slide_variants, EXPECTED_PPTX) for ext in SLIDE_VARIANTS_PPTX_REFUSES],
+]
+
+
+# each reader gives exactly the expected text for its file
+@pytest.mark.parametrize("ext, make, reader, expected", READERS,
+                         ids=[f"{ext}-{reader.__name__}" for ext, _, reader, _ in READERS])
+def test_reader_gives_the_expected_text(tmp_path, ext, make, reader, expected):
+    f = tmp_path / f"doc{ext}"
+    make(f)
+
+    assert reader(f) == expected
+
+
+# the normal readers refuse the variants
+@pytest.mark.parametrize("ext, reader, message", [
+    *[(ext, read_docx, "not a Word file") for ext in WORD_VARIANTS],
+    *[(ext, read_pptx, "not a PowerPoint file") for ext in SLIDE_VARIANTS_PPTX_REFUSES],
+])
+def test_main_reader_refuses_the_variants(tmp_path, ext, reader, message):
+    f = tmp_path / f"doc{ext}"
+    make_variant(f)
+
+    with pytest.raises(ValueError, match=message):
+        reader(f)
+
+
+# the file on disk is not changed
+@pytest.mark.parametrize("ext, reader", [(".docm", read_word_variants), (".ppsx", read_slide_variants)])
+def test_variant_reader_leaves_the_file_on_disk_unchanged(tmp_path, ext, reader):
+    f = tmp_path / f"doc{ext}"
+    make_variant(f)
+    before = f.read_bytes()
+
+    reader(f)
+
+    assert f.read_bytes() == before
+
+
+# an empty word or powerpoint file gives empty text
+@pytest.mark.parametrize("name, make, reader", [
+    ("empty.docx", lambda f: docx.Document().save(str(f)), read_docx),
+    ("empty.pptx", lambda f: pptx.Presentation().save(str(f)), read_pptx),
+])
+def test_empty_document_gives_empty_text(tmp_path, name, make, reader):
+    f = tmp_path / name
+    make(f)
+
+    assert reader(f) == ""
+
+
+# a picture gives [Image: alt text]
 @pytest.mark.parametrize("alt, expected", [("", []), ("Χάρτης", ["[Image: Χάρτης]"])])
 def test_format_shape_picture(tmp_path, alt, expected):
     image = tmp_path / "img.png"
@@ -725,118 +819,6 @@ def test_format_shape_picture(tmp_path, alt, expected):
     assert format_shape(picture) == expected
 
 
-def test_parse_file_reads_pptx(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    make_pptx(root / "deck.pptx")
-    (root / "img.png").unlink()  
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "ok"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == EXPECTED_PPTX
-
-
-def test_parse_file_marks_a_broken_pptx_as_failed(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "broken.pptx").write_bytes(b"this is not a zip file")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "failed"
-
-
-# ---------- office: PowerPoint variants (.pptm, .potx, .potm, .ppsx, .ppsm) ----------
-
-# Written out here on purpose (not imported from office.py),
-# so a typo in the constants of office.py is caught.
-PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
-SLIDE_VARIANT_CONTENT_TYPES = {
-    ".pptm": "application/vnd.ms-powerpoint.presentation.macroEnabled.main+xml",
-    ".potx": "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml",
-    ".potm": "application/vnd.ms-powerpoint.template.macroEnabled.main+xml",
-    ".ppsx": "application/vnd.openxmlformats-officedocument.presentationml.slideshow.main+xml",
-    ".ppsm": "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml",
-}
-SLIDE_VARIANTS_PPTX_REFUSES = [".potx", ".potm", ".ppsx", ".ppsm"]
-
-
-def make_slide_variant(path):
-    """Build the test .pptx, then save it as `path` with the label of its extension."""
-    base = path.parent / "base.pptx"
-    make_pptx(base)
-    content_type = SLIDE_VARIANT_CONTENT_TYPES[path.suffix]
-    with zipfile.ZipFile(base) as src, zipfile.ZipFile(path, "w") as dst:
-        for item in src.infolist():
-            data = src.read(item.filename)
-            if item.filename == "[Content_Types].xml":
-                data = data.replace(PPTX_CONTENT_TYPE.encode(), content_type.encode())
-            dst.writestr(item, data)
-    base.unlink()
-    (path.parent / "img.png").unlink()
-
-
-def test_read_pptx_accepts_pptm(tmp_path):
-    # Unlike python-docx with .docm, python-pptx accepts the macro-enabled label.
-    f = tmp_path / "deck.pptm"
-    make_slide_variant(f)
-
-    assert read_pptx(f) == EXPECTED_PPTX
-
-
-@pytest.mark.parametrize("ext", SLIDE_VARIANTS_PPTX_REFUSES)
-def test_read_pptx_rejects_slide_variants(tmp_path, ext):
-    # The reason read_slide_variants exists.
-    f = tmp_path / f"deck{ext}"
-    make_slide_variant(f)
-
-    with pytest.raises(ValueError, match="not a PowerPoint file"):
-        read_pptx(f)
-
-
-@pytest.mark.parametrize("ext", SLIDE_VARIANTS_PPTX_REFUSES)
-def test_read_slide_variants_gives_same_text_as_pptx(tmp_path, ext):
-    f = tmp_path / f"deck{ext}"
-    make_slide_variant(f)
-
-    assert read_slide_variants(f) == EXPECTED_PPTX
-
-
-def test_read_slide_variants_leaves_the_file_on_disk_unchanged(tmp_path):
-    f = tmp_path / "deck.ppsx"
-    make_slide_variant(f)
-    before = f.read_bytes()
-
-    read_slide_variants(f)
-
-    assert f.read_bytes() == before
-
-
-@pytest.mark.parametrize("ext", list(SLIDE_VARIANT_CONTENT_TYPES))
-def test_parse_file_reads_slide_variants(tmp_path, ext):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    make_slide_variant(root / f"deck{ext}")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "ok"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == EXPECTED_PPTX
-
-
-def test_parse_file_marks_a_broken_potx_as_failed(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    (root / "broken.potx").write_bytes(b"this is not a zip file")
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
-
-    assert doc.parse_status == "failed"
-
-
 RTF_GREEK_CP1253 = (
     "{\\rtf1\\ansi\\ansicpg1253\\deff0{\\fonttbl{\\f0 Arial;}}\r\n"
     "\\f0 \\'c3\\'e5\\'e9\\'e1 \\'f3\\'ef\\'f5\\par\r\n"
@@ -847,399 +829,70 @@ RTF_GREEK_CP1253 = (
 EXPECTED_RTF = "Γεια σου\n\nSecond paragraph\nsame paragraph, new line"
 
 
-def write_rtf(tmp_path, content, name="doc.rtf", encoding="ascii"):
-    f = tmp_path / name
-    f.write_bytes(content.encode(encoding))
-    return f
+# (file name, maker, content type, expected text)
+DOCUMENTS = [
+    ("doc.docx", make_docx, "prose", EXPECTED_DOCX),
+    *[(f"doc{ext}", make_variant, "prose", EXPECTED_DOCX) for ext in WORD_VARIANTS],
+    ("deck.pptx", make_pptx, "prose", EXPECTED_PPTX),
+    *[(f"deck{ext}", make_variant, "prose", EXPECTED_PPTX)
+      for ext in [".pptm", *SLIDE_VARIANTS_PPTX_REFUSES]],
+    ("doc.rtf", lambda f: f.write_bytes(RTF_GREEK_CP1253.encode("ascii")), "prose", EXPECTED_RTF),
+    ("expenses.xls", lambda f: f.write_bytes((FIXTURES / "expenses.xls").read_bytes()), "tabular",
+     EXPECTED_XLS),
+    ("notes.markdown", lambda f: f.write_bytes("# Σημειώσεις\n\nΚείμενο.".encode()), "prose",
+     "# Σημειώσεις\n\nΚείμενο."),
+]
 
 
-def test_read_rtf_greek_cp1253_escapes(tmp_path):
-    assert read_rtf(write_rtf(tmp_path, RTF_GREEK_CP1253)) == EXPECTED_RTF
-
-
-def test_read_rtf_greek_unicode_escapes(tmp_path):
-    rtf = r"{\rtf1\ansi\ansicpg1252\uc1 \u915?\u949?\u953?\u945? \u963?\u959?\u965?\par}"
-
-    assert read_rtf(write_rtf(tmp_path, rtf)) == "Γεια σου"
-
-
-def test_read_rtf_greek_written_directly_in_cp1253(tmp_path):
-    rtf = "{\\rtf1\\ansi\\ansicpg1253 Γεια σου κόσμε\\par}"
-
-    assert read_rtf(write_rtf(tmp_path, rtf, encoding="cp1253")) == "Γεια σου κόσμε"
-
-
-def test_read_rtf_strips_blank_lines_and_spaces_at_both_ends(tmp_path):
-    rtf = "\r\n  {\\rtf1\\ansi \\par\\par Text\\par\\par\\par}"
-
-    assert read_rtf(write_rtf(tmp_path, rtf)) == "Text"
-
-
-def test_read_rtf_empty_document(tmp_path):
-    assert read_rtf(write_rtf(tmp_path, r"{\rtf1\ansi}")) == ""
-
-
-def test_read_rtf_drops_pictures(tmp_path):
-    rtf = r"{\rtf1\ansi Before {\pict\pngblip\picw10\pich10 89504e470d0a1a0a0000}after\par}"
-
-    assert read_rtf(write_rtf(tmp_path, rtf)) == "Before after"
-
-
-def test_read_rtf_tables_stay_as_cells_with_bars(tmp_path):
-    rtf = (r"{\rtf1\ansi\trowd\cellx2000\cellx4000 Name\cell Grade\cell\row"
-           r"\trowd\cellx2000\cellx4000 Maria\cell 9\cell\row\pard After table\par}")
-
-    assert read_rtf(write_rtf(tmp_path, rtf)) == "Name|Grade|\nMaria|9|\nAfter table"
-
-
-@pytest.mark.parametrize("content", ["this is not an rtf file", "", "{\\rtfX not really}"])
-def test_read_rtf_rejects_files_that_are_not_rtf(tmp_path, content):
-    with pytest.raises(ValueError):
-        read_rtf(write_rtf(tmp_path, content))
-
-
-def test_parse_file_reads_rtf(tmp_path):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    write_rtf(root, RTF_GREEK_CP1253)
-
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+# every document format through parse_file
+@pytest.mark.parametrize("name, make, content_type, expected", DOCUMENTS, ids=[d[0] for d in DOCUMENTS])
+def test_parse_file_reads_the_document(tmp_path, name, make, content_type, expected):
+    doc = parse_one(tmp_path, name, built(tmp_path, name, make))
 
     assert doc.parse_status == "ok"
-    assert doc.content_type == "prose"
-    assert doc.raw_text == EXPECTED_RTF
+    assert doc.content_type == content_type
+    assert doc.raw_text == expected
 
 
-@pytest.mark.parametrize(
-    "content, status",
-    [
-        ("this is not an rtf file", "failed"),   
-        (r"{\rtf1\ansi}", "empty"),
-        ("", "failed"),                         
-    ],
-)
-def test_parse_file_rtf_status(tmp_path, content, status):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    write_rtf(root, content)
+ZIP_FORMATS = [".docx", *WORD_VARIANTS, ".pptx", ".pptm", *SLIDE_VARIANTS_PPTX_REFUSES, ".xlsx", ".xls", ".ods"]
 
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
 
-    assert doc.parse_status == status
-
+# a broken file of any format is failed
 @pytest.mark.parametrize("name, data", [
-    ("notes.txt", "Γεια".encode()),       
-    ("broken.docx", b"not a zip"),         
-    ("song.mp3", b"\x00\x01"),           
+    *[(f"broken{ext}", b"this is not a zip file") for ext in ZIP_FORMATS],
+    ("broken.rtf", b"this is not an rtf file"),
+    ("empty.rtf", b""),
 ])
-def test_parse_file_keeps_the_last_modified_time(tmp_path, name, data):
-    root = tmp_path / "corpus"
-    root.mkdir()
-    f = root / name
-    f.write_bytes(data)
-    when = datetime.datetime(2024, 3, 1, 14, 30).timestamp()
-    os.utime(f, (when, when))  
+def test_parse_file_marks_a_broken_file_as_failed(tmp_path, name, data):
+    doc = parse_one(tmp_path, name, data)
 
-    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+    assert doc.parse_status == "failed"
+    assert doc.content_type == ("tabular" if name.endswith((".xlsx", ".xls", ".ods")) else "prose")
 
-    assert doc.last_modified == when
+
+# an rtf with no text is empty, not failed
+def test_parse_file_valid_but_empty_rtf_is_empty(tmp_path):
+    assert parse_one(tmp_path, "doc.rtf", rb"{\rtf1\ansi}").parse_status == "empty"
+
+
+# each extension points to the right reader in PARSERS
+@pytest.mark.parametrize("ext, reader", [
+    (".markdown", read_text),
+    (".docx", read_docx),
+    *[(ext, read_word_variants) for ext in WORD_VARIANTS],
+    (".pptx", read_pptx),
+    (".pptm", read_pptx),
+    *[(ext, read_slide_variants) for ext in SLIDE_VARIANTS_PPTX_REFUSES],
+    (".rtf", read_rtf),
+])
+def test_extension_is_registered(ext, reader):
+    assert PARSERS.get(ext) is reader
+
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 
 
-def test_parse_file_reads_upper_case_extensions(tmp_path):
-    f = tmp_path / "base.docx"
-    d = docx.Document()
-    d.add_paragraph("Αναφορά")
-    d.save(str(f))
-
-    doc = parse_all(tmp_path, {"REPORT.DOCX": f.read_bytes()})["REPORT.DOCX"]
-
-    assert doc.parse_status == "ok"
-    assert doc.raw_text == "Αναφορά"
-
-
-def test_zero_byte_text_file_is_empty(tmp_path):
-    assert parse_all(tmp_path, {"empty.txt": b""})["empty.txt"].parse_status == "empty"
-
-
-@pytest.mark.parametrize("word", [
-    pytest.param("Ναι", marks=pytest.mark.xfail(strict=True, reason="L28: too short to detect cp1253")),
-    "Όχι", "Άρτα", "Χανιά", "Ηράκλειο",
-])
-def test_read_text_short_greek_words_in_cp1253(tmp_path, word):
-    f = tmp_path / "short.txt"
-    f.write_bytes(word.encode("cp1253"))
-
-    assert read_text(f) == word
-
-
-@pytest.mark.xfail(strict=True, reason="L28: read as cp1253, so Ά becomes ¶")
-def test_read_text_iso_8859_7_capital_with_accent(tmp_path):
-    text = "Άνοιξη στην Ήπειρο, Ώρα για Ύδρα."
-    f = tmp_path / "iso.txt"
-    f.write_bytes(text.encode("iso8859_7"))
-
-    assert read_text(f) == text
-
-
-@pytest.mark.xfail(strict=True, reason="L28: one bad byte makes the whole file fail")
-def test_read_text_utf8_with_stray_windows_quotes_keeps_the_greek(tmp_path):
-    f = tmp_path / "mixed.txt"
-    f.write_bytes("Σημειώσεις για την εξεταστική ".encode() + b"\x93quote\x94"
-                  + " και τα θέματα του Ιουνίου.".encode())
-
-    text = read_text(f)
-
-    assert "Σημειώσεις για την εξεταστική" in text
-    assert "θέματα του Ιουνίου" in text
-
-
-def test_read_csv_excel_utf8_bom_is_not_part_of_the_first_header(tmp_path):
-    f = tmp_path / "excel.csv"
-    f.write_bytes("Όνομα;Βαθμός\r\nΜαρία;9\r\n".encode("utf-8-sig"))
-
-    assert read_csv(f) == "Όνομα: Μαρία; Βαθμός: 9"
-
-
-@pytest.mark.parametrize("break_in_cell", ["\n", "\r\n"])
-def test_read_csv_line_break_inside_quotes(tmp_path, break_in_cell):
-    f = tmp_path / "notes.csv"
-    f.write_bytes(f'name,comment\r\nmaria,"first line{break_in_cell}second line"\r\n'.encode())
-
-    assert read_csv(f) == "name: maria; comment: first line / second line"
-
-
-@pytest.mark.parametrize("line_break", ["\r\n", "\r"])
-def test_cell_to_str_any_line_break_becomes_a_slash(line_break):
-    assert cell_to_str(f"first line{line_break}second line") == "first line / second line"
-
-
-def test_read_xlsx_cell_with_windows_line_break(tmp_path):
-    f = tmp_path / "notes.xlsx"
-    make_xlsx(f, [("Σημειώσεις", [["Όνομα", "Σχόλιο"], ["Μαρία", "πρώτη γραμμή\r\nδεύτερη γραμμή"]])])
-
-    assert read_xlsx(f) == "# Sheet: Σημειώσεις\nΌνομα: Μαρία; Σχόλιο: πρώτη γραμμή / δεύτερη γραμμή"
-
-
-def test_format_rows_keeps_values_beyond_the_header_far_down_the_table():
-    """The wider row is past the first 10 rows, so the header itself is found correctly."""
-    rows = [
-        ("Όνομα", "Βαθμός"),
-        *[(f"Φοιτητής {i}", "8") for i in range(1, 11)],
-        ("Μαρία", "9", "άριστα"),
-    ]
-
-    assert format_rows(rows).splitlines()[-1] == "Όνομα: Μαρία; Βαθμός: 9; col3: άριστα"
-
-
-def test_read_csv_semicolon_file_with_commas_inside_quotes(tmp_path):
-    f = tmp_path / "bills.csv"
-    f.write_bytes(
-        "Περιγραφή;Ποσό\n\"Ρεύμα, νερό, τηλέφωνο\";54\n\"Ενοίκιο, κοινόχρηστα\";400\n".encode()
-    )
-
-    assert read_csv(f) == (
-        "Περιγραφή: Ρεύμα, νερό, τηλέφωνο; Ποσό: 54\n"
-        "Περιγραφή: Ενοίκιο, κοινόχρηστα; Ποσό: 400"
-    )
-
-
-@pytest.mark.xfail(strict=True, reason="L29: a full data row wins over the header")
-def test_read_csv_pandas_index_column_has_no_header(tmp_path):
-    """df.to_csv() writes the index as a first column with an empty header cell."""
-    f = tmp_path / "pandas.csv"
-    f.write_bytes(b",city,population\n0,Heraklion,180000\n1,Chania,110000\n")
-
-    assert read_csv(f) == (
-        "col1: 0; city: Heraklion; population: 180000\n"
-        "col1: 1; city: Chania; population: 110000"
-    )
-
-
-@pytest.mark.xfail(strict=True, reason="L29: a wider data row wins over the header")
-def test_read_csv_values_beyond_the_last_header_are_kept(tmp_path):
-    f = tmp_path / "ragged.csv"
-    f.write_bytes(b"name,grade\nmaria,9,excellent\n")
-
-    assert read_csv(f) == "name: maria; grade: 9; col3: excellent"
-
-
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2")
-def test_format_rows_wider_data_row_with_a_date_does_not_become_the_header():
-    rows = [("Ημερομηνία", "Περιγραφή"), ("2024-03-01", "Ρεύμα", "πληρώθηκε")]
-
-    assert format_rows(rows) == "Ημερομηνία: 2024-03-01; Περιγραφή: Ρεύμα; col3: πληρώθηκε"
-
-
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2")
-def test_format_rows_table_of_only_numbers_has_no_header():
-    rows = [("2024", "120", "340"), ("2025", "150", "380")]
-
-    assert format_rows(rows) == "2024 | 120 | 340\n2025 | 150 | 380"
-
-
-# Guards: these pass today and must keep passing after the new header rule.
-
-def test_format_rows_years_in_the_header_are_fine():
-    rows = [("Περιοχή", "2023", "2024"), ("Κρήτη", "120", "150")]
-
-    assert format_rows(rows) == "Περιοχή: Κρήτη; 2023: 120; 2024: 150"
-
-
-@pytest.mark.parametrize("subtitle", [("Εξάμηνο", "Χειμερινό"), ("Εξάμηνο", "2024")])
-def test_format_rows_subtitle_above_the_header_stays_a_subtitle(subtitle):
-    rows = [subtitle, ("Όνομα", "Μάθημα", "Βαθμός"), ("Μαρία", "ΗΥ100", "9")]
-
-    assert format_rows(rows) == f"{subtitle[0]} | {subtitle[1]}\nΌνομα: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9"
-
-
-def test_format_rows_table_of_only_words():
-    rows = [("Όνομα", "Επώνυμο"), ("Μαρία", "Παπαδάκη"), ("Νίκος", "Κωστάκης")]
-
-    assert format_rows(rows) == "Όνομα: Μαρία; Επώνυμο: Παπαδάκη\nΌνομα: Νίκος; Επώνυμο: Κωστάκης"
-
-
-# When the file itself marks the header rows (ODF table-header-rows, Word "repeat header row"),
-# the parser passes header_rows=N and no guessing is done.
-
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2 (header_rows parameter)")
-def test_format_rows_header_marked_by_the_file_is_trusted_even_if_numeric():
-    rows = [("2023", "2024"), ("120", "150")]
-
-    assert format_rows(rows, header_rows=1) == "2023: 120; 2024: 150"
-
-
-@pytest.mark.xfail(strict=True, reason="L29: fix plan step 2 (header_rows parameter)")
-def test_format_rows_two_header_rows_are_joined_per_column():
-    """A group title over two columns (merged cell, already filled by step 3) and the names below it.
-    Per column: the non-empty names from top to bottom, without repeats, joined with " - "."""
-    rows = [("Όνομα", "Βαθμοί", "Βαθμοί"), ("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8")]
-
-    assert format_rows(rows, header_rows=2) == "Όνομα: Μαρία; Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8"
-
-
-GRADES = [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Νίκος", "απαλλαγή", "")]
-EXPECTED_MERGED = (
-    "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\n"
-    "Όνομα: Νίκος; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή"
-)
-
-
-def test_read_docx_merged_cells(tmp_path):
-    d = docx.Document()
-    t = d.add_table(rows=3, cols=3)
-    for r, row in enumerate(GRADES):
-        for c, value in enumerate(row):
-            t.cell(r, c).text = value
-    t.cell(2, 1).merge(t.cell(2, 2)).text = "απαλλαγή"
-    f = tmp_path / "merged.docx"
-    d.save(str(f))
-
-    assert read_docx(f) == EXPECTED_MERGED
-
-
-@pytest.mark.xfail(strict=True, reason="L30: the covered cell is read as empty")
-def test_read_pptx_merged_cells(tmp_path):
-    p = pptx.Presentation()
-    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
-    t = slide.shapes.add_table(3, 3, PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(2)).table
-    for r, row in enumerate(GRADES):
-        for c, value in enumerate(row):
-            t.cell(r, c).text = value
-    t.cell(2, 1).merge(t.cell(2, 2))
-    f = tmp_path / "merged.pptx"
-    p.save(str(f))
-
-    assert read_pptx(f) == "# Slide 1\n\n" + EXPECTED_MERGED
-
-
-@pytest.mark.xfail(strict=True, reason="L30: the covered cell is read as empty")
-def test_read_xlsx_merged_cells_across(tmp_path):
-    book = openpyxl.Workbook()
-    sheet = book.active
-    assert sheet is not None
-    sheet.title = "Βαθμοί"
-    for row in GRADES:
-        sheet.append(row)
-    sheet.merge_cells("B3:C3")
-    f = tmp_path / "merged.xlsx"
-    book.save(f)
-
-    assert read_xlsx(f) == "# Sheet: Βαθμοί\n" + EXPECTED_MERGED
-
-
-@pytest.mark.xfail(strict=True, reason="L30: the covered cell is read as empty")
-def test_read_xlsx_merged_cells_down(tmp_path):
-    book = openpyxl.Workbook()
-    sheet = book.active
-    assert sheet is not None
-    sheet.title = "Έξοδα"
-    for row in [("Κατηγορία", "Μήνας", "Ποσό"), ("Ρεύμα", "Μάρτιος", 54), (None, "Απρίλιος", 60)]:
-        sheet.append(row)
-    sheet.merge_cells("A2:A3")
-    f = tmp_path / "down.xlsx"
-    book.save(f)
-
-    assert read_xlsx(f) == (
-        "# Sheet: Έξοδα\n"
-        "Κατηγορία: Ρεύμα; Μήνας: Μάρτιος; Ποσό: 54\n"
-        "Κατηγορία: Ρεύμα; Μήνας: Απρίλιος; Ποσό: 60"
-    )
-
-
-@pytest.mark.xfail(strict=True, reason="L30: the covered cell is read as empty")
-def test_read_ods_merged_cells(tmp_path):
-    """Built like LibreOffice saves it: a spanning cell, then a covered-table-cell."""
-    doc = OpenDocumentSpreadsheet()
-    table = OdfTable(name="Βαθμοί")
-    for row in GRADES:
-        tr = TableRow()
-        for c, value in enumerate(row):
-            if row[0] == "Νίκος" and c == 2:
-                tr.addElement(CoveredTableCell())
-                continue
-            span = 2 if row[0] == "Νίκος" and c == 1 else 1
-            cell = TableCell(valuetype="string", numbercolumnsspanned=span)
-            cell.addElement(OdfP(text=value))
-            tr.addElement(cell)
-        table.addElement(tr)
-    doc.spreadsheet.addElement(table)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
-    f = tmp_path / "merged.ods"
-    doc.save(str(f))
-
-    assert read_ods(f) == "# Sheet: Βαθμοί\n" + EXPECTED_MERGED
-
-
-def test_read_xlsx_formula_uses_the_value_excel_saved(tmp_path):
-    book = openpyxl.Workbook()
-    sheet = book.active
-    assert sheet is not None
-    sheet.title = "Τιμές"
-    sheet.append(["Τεμάχια", "Τιμή", "Σύνολο"])
-    sheet.append([2, 5, "=A2*B2"])
-    plain = tmp_path / "plain.xlsx"
-    book.save(plain)
-    f = tmp_path / "formula.xlsx"
-    with zipfile.ZipFile(plain) as src, zipfile.ZipFile(f, "w") as dst:
-        for item in src.infolist():
-            data = src.read(item.filename)
-            if item.filename == "xl/worksheets/sheet1.xml":
-                assert b"<f>A2*B2</f><v></v>" in data
-                data = data.replace(b"<f>A2*B2</f><v></v>", b"<f>A2*B2</f><v>10</v>")
-            dst.writestr(item, data)
-
-    assert read_xlsx(f) == "# Sheet: Τιμές\nΤεμάχια: 2; Τιμή: 5; Σύνολο: 10"
-
-
-@pytest.mark.xfail(strict=True, reason="L31: ods dates come out with 00:00:00")
-def test_read_ods_real_date_cells(tmp_path):
-    f = tmp_path / "dates.ods"
-    make_ods(f, [("Έξοδα", [["Ημερομηνία", "Ποσό"], [datetime.datetime(2024, 3, 1), 54]])])
-
-    assert read_ods(f) == "# Sheet: Έξοδα\nΗμερομηνία: 2024-03-01; Ποσό: 54"
-
-
+# a table inside a table cell (common in forms)
 @pytest.mark.xfail(strict=True, reason="L32: cell.text skips tables inside the cell")
 def test_read_docx_table_inside_a_table_cell(tmp_path):
     d = docx.Document()
@@ -1257,9 +910,9 @@ def test_read_docx_table_inside_a_table_cell(tmp_path):
     assert "maria@uoc.gr" in text
 
 
+# word saves a text box twice, we want it once
 @pytest.mark.xfail(strict=True, reason="L32: text boxes are not read")
 def test_read_docx_text_box_appears_once(tmp_path):
-    """Word saves a text box twice: as a modern shape AND as an old VML copy."""
     d = docx.Document()
     d.add_paragraph("Πριν")
     box = "<w:txbxContent><w:p><w:r><w:t>Κείμενο σε πλαίσιο</w:t></w:r></w:p></w:txbxContent>"
@@ -1288,66 +941,54 @@ def test_read_docx_text_box_appears_once(tmp_path):
     assert text.index("Πριν") < text.index("Κείμενο σε πλαίσιο") < text.index("Μετά")
 
 
-@pytest.mark.xfail(strict=True, reason="L32: content controls (w:sdt) are skipped")
-def test_read_docx_content_control_around_paragraphs(tmp_path):
+# a document with one paragraph and some raw word xml
+def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
     d = docx.Document()
-    d.add_paragraph("Αίτηση")
-    d.paragraphs[-1]._p.addnext(parse_xml(
-        f'<w:sdt xmlns:w="{W_NS}"><w:sdtPr/><w:sdtContent>'
-        '<w:p><w:r><w:t>Όνομα φοιτητή: Μαρία Παπαδάκη</w:t></w:r></w:p>'
-        '</w:sdtContent></w:sdt>'
-    ))
-    f = tmp_path / "form.docx"
+    p = d.add_paragraph(first_text)
+    for xml in xml_parts:
+        # add the w: namespace to the first tag
+        tag_end = xml.index(" ") if " " in xml.split(">")[0] else xml.index(">")
+        element = parse_xml(xml[:tag_end] + f' xmlns:w="{W_NS}"' + xml[tag_end:])
+        if inside:
+            p._p.append(element)
+        else:
+            p._p.addnext(element)
+    if last_text is not None:
+        p.add_run(last_text)
+    f = tmp_path / "doc.docx"
     d.save(str(f))
-
-    assert read_docx(f) == "Αίτηση\n\nΌνομα φοιτητή: Μαρία Παπαδάκη"
-
-
-@pytest.mark.xfail(strict=True, reason="L32: content controls (w:sdt) are skipped")
-def test_read_docx_content_control_inside_a_paragraph(tmp_path):
-    d = docx.Document()
-    d.add_paragraph("Ημερομηνία: ")._p.append(parse_xml(
-        f'<w:sdt xmlns:w="{W_NS}"><w:sdtPr/><w:sdtContent>'
-        '<w:r><w:t>15/06/2026</w:t></w:r></w:sdtContent></w:sdt>'
-    ))
-    f = tmp_path / "inline_form.docx"
-    d.save(str(f))
-
-    assert read_docx(f) == "Ημερομηνία: 15/06/2026"
+    return f
 
 
-@pytest.mark.xfail(strict=True, reason="L32: inserted text (w:ins) is skipped")
-def test_read_docx_tracked_changes_give_the_current_text(tmp_path):
-    d = docx.Document()
-    p = d.add_paragraph("Η προθεσμία είναι ")
-    p._p.append(parse_xml(
-        f'<w:del xmlns:w="{W_NS}" w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z">'
-        '<w:r><w:delText>η Δευτέρα</w:delText></w:r></w:del>'
-    ))
-    p._p.append(parse_xml(
-        f'<w:ins xmlns:w="{W_NS}" w:id="2" w:author="A" w:date="2026-01-01T00:00:00Z">'
-        '<w:r><w:t>η Τρίτη</w:t></w:r></w:ins>'
-    ))
-    p.add_run(".")
-    f = tmp_path / "tracked.docx"
-    d.save(str(f))
-
-    assert read_docx(f) == "Η προθεσμία είναι η Τρίτη."
-
-
-def test_read_docx_hyperlink_text(tmp_path):
-    d = docx.Document()
-    p = d.add_paragraph("Δες ")
-    p._p.append(parse_xml(
-        f'<w:hyperlink xmlns:w="{W_NS}" w:anchor="top"><w:r><w:t>τον οδηγό</w:t></w:r></w:hyperlink>'
-    ))
-    p.add_run(" για λεπτομέρειες.")
-    f = tmp_path / "link.docx"
-    d.save(str(f))
-
-    assert read_docx(f) == "Δες τον οδηγό για λεπτομέρειες."
+# text inside content controls, tracked changes and links
+@pytest.mark.parametrize("first, xml_parts, last, inside, expected", [
+    pytest.param("Αίτηση", ['<w:sdt><w:sdtPr/><w:sdtContent>'
+                            '<w:p><w:r><w:t>Όνομα φοιτητή: Μαρία Παπαδάκη</w:t></w:r></w:p>'
+                            '</w:sdtContent></w:sdt>'], None, False,
+                 "Αίτηση\n\nΌνομα φοιτητή: Μαρία Παπαδάκη",
+                 marks=pytest.mark.xfail(strict=True, reason="L32: content controls (w:sdt) are skipped"),
+                 id="content control around paragraphs"),
+    pytest.param("Ημερομηνία: ", ['<w:sdt><w:sdtPr/><w:sdtContent>'
+                                  '<w:r><w:t>15/06/2026</w:t></w:r></w:sdtContent></w:sdt>'], None, True,
+                 "Ημερομηνία: 15/06/2026",
+                 marks=pytest.mark.xfail(strict=True, reason="L32: content controls (w:sdt) are skipped"),
+                 id="content control inside a paragraph"),
+    pytest.param("Η προθεσμία είναι ",
+                 ['<w:del w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z">'
+                  '<w:r><w:delText>η Δευτέρα</w:delText></w:r></w:del>',
+                  '<w:ins w:id="2" w:author="A" w:date="2026-01-01T00:00:00Z">'
+                  '<w:r><w:t>η Τρίτη</w:t></w:r></w:ins>'], ".", True,
+                 "Η προθεσμία είναι η Τρίτη.",
+                 marks=pytest.mark.xfail(strict=True, reason="L32: inserted text (w:ins) is skipped"),
+                 id="tracked changes give the current text"),
+    pytest.param("Δες ", ['<w:hyperlink w:anchor="top"><w:r><w:t>τον οδηγό</w:t></w:r></w:hyperlink>'],
+                 " για λεπτομέρειες.", True, "Δες τον οδηγό για λεπτομέρειες.", id="hyperlink text"),
+])
+def test_read_docx_text_inside_other_elements(tmp_path, first, xml_parts, last, inside, expected):
+    assert read_docx(docx_with_xml(tmp_path, first, xml_parts, last, inside)) == expected
 
 
+# the title of a chart should be in the text
 @pytest.mark.xfail(strict=True, reason="L33: charts are not read")
 def test_read_pptx_chart_title(tmp_path):
     p = pptx.Presentation()
@@ -1355,6 +996,7 @@ def test_read_pptx_chart_title(tmp_path):
     data = CategoryChartData()
     data.categories = ["2023", "2024"]
     data.add_series("Φοιτητές", (120, 150))
+    # wrong type hints in python-pptx
     frame = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, PptxInches(1), PptxInches(1),
                                    PptxInches(6), PptxInches(4), data)  # pyright: ignore[reportArgumentType]
     chart = frame.chart  # pyright: ignore[reportAttributeAccessIssue]
@@ -1366,22 +1008,46 @@ def test_read_pptx_chart_title(tmp_path):
     assert "Εγγραφές ανά έτος" in read_pptx(f)
 
 
-def test_read_rtf_document_properties_are_not_body_text(tmp_path):
-    f = tmp_path / "info.rtf"
-    f.write_bytes(
-        rb"{\rtf1\ansi\ansicpg1253{\fonttbl{\f0 Arial;}}"
-        rb"{\info{\title Secret title}{\author Some Author}}"
-        rb"\f0 Body text.\par}"
-    )
-
-    assert read_rtf(f) == "Body text."
+# writes an rtf string to a file
+def write_rtf(tmp_path, content, name="doc.rtf", encoding="ascii"):
+    f = tmp_path / name
+    f.write_bytes(content.encode(encoding))
+    return f
 
 
+# rtf files
+@pytest.mark.parametrize("rtf, encoding, expected", [
+    pytest.param(RTF_GREEK_CP1253, "ascii", EXPECTED_RTF, id="Greek as cp1253 escapes"),
+    pytest.param(r"{\rtf1\ansi\ansicpg1252\uc1 \u915?\u949?\u953?\u945? \u963?\u959?\u965?\par}",
+                 "ascii", "Γεια σου", id="Greek as unicode escapes"),
+    pytest.param("{\\rtf1\\ansi\\ansicpg1253 Γεια σου κόσμε\\par}", "cp1253", "Γεια σου κόσμε",
+                 id="Greek written directly in cp1253"),
+    pytest.param("\r\n  {\\rtf1\\ansi \\par\\par Text\\par\\par\\par}", "ascii", "Text",
+                 id="blank lines and spaces stripped at both ends"),
+    pytest.param(r"{\rtf1\ansi}", "ascii", "", id="empty document"),
+    pytest.param(r"{\rtf1\ansi Before {\pict\pngblip\picw10\pich10 89504e470d0a1a0a0000}after\par}",
+                 "ascii", "Before after", id="pictures dropped"),
+    pytest.param(r"{\rtf1\ansi\trowd\cellx2000\cellx4000 Name\cell Grade\cell\row"
+                 r"\trowd\cellx2000\cellx4000 Maria\cell 9\cell\row\pard After table\par}",
+                 "ascii", "Name|Grade|\nMaria|9|\nAfter table", id="tables stay as cells with bars"),
+    pytest.param(r"{\rtf1\ansi\ansicpg1253{\fonttbl{\f0 Arial;}}"
+                 r"{\info{\title Secret title}{\author Some Author}}\f0 Body text.\par}",
+                 "ascii", "Body text.", id="document properties are not body text"),
+])
+def test_read_rtf(tmp_path, rtf, encoding, expected):
+    assert read_rtf(write_rtf(tmp_path, rtf, encoding=encoding)) == expected
+
+
+# a footnote should not break the sentence
 def test_read_rtf_footnote_is_not_glued_into_the_sentence(tmp_path):
-    f = tmp_path / "notes.rtf"
-    f.write_bytes(
-        rb"{\rtf1\ansi{\header Page header}"
-        rb"Main sentence{\super\chftn{\footnote\pard\plain\chftn Footnote text.}} continues.\par}"
-    )
+    rtf = (r"{\rtf1\ansi{\header Page header}"
+           r"Main sentence{\super\chftn{\footnote\pard\plain\chftn Footnote text.}} continues.\par}")
 
-    assert "Main sentence continues." in read_rtf(f)
+    assert "Main sentence continues." in read_rtf(write_rtf(tmp_path, rtf))
+
+
+# a file that doesn't start with {\rtf1 is not rtf
+@pytest.mark.parametrize("content", ["this is not an rtf file", "", "{\\rtfX not really}"])
+def test_read_rtf_rejects_files_that_are_not_rtf(tmp_path, content):
+    with pytest.raises(ValueError):
+        read_rtf(write_rtf(tmp_path, content))
