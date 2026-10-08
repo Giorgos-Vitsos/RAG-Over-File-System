@@ -64,7 +64,8 @@ def parse_file(scanned: ScannedFile)->Document:
 
 
 def make_doc(ext,text,content_type,status,scanned:ScannedFile,)->Document:
-    return Document(scanned.rel_path,scanned.root_id,ext,text,content_type,status,scanned.sha256)
+    return Document(file_path=scanned.rel_path,root_id=scanned.root_id,ext=ext,raw_text=text,last_modified=scanned.mtime,content_type=content_type,parse_status=status,sha256=scanned.sha256)
+
 
 def content_type_of(ext):
     if ext in CODE_EXT:

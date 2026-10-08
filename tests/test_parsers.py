@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import zipfile
 from pathlib import Path
 
@@ -919,3 +920,23 @@ def test_parse_file_rtf_status(tmp_path, content, status):
     doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
 
     assert doc.parse_status == status
+
+
+# ---------- file information carried into the Document ----------
+
+@pytest.mark.parametrize("name, data", [
+    ("notes.txt", "Γεια".encode()),        # read fine
+    ("broken.docx", b"not a zip"),         # failed: the date must still be there
+    ("song.mp3", b"\x00\x01"),             # unsupported: the date must still be there
+])
+def test_parse_file_keeps_the_last_modified_time(tmp_path, name, data):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    f = root / name
+    f.write_bytes(data)
+    when = datetime.datetime(2024, 3, 1, 14, 30).timestamp()
+    os.utime(f, (when, when))   # (access time, modification time)
+
+    doc = parse_file(scan(CorpusConfig(roots=[root])).files[0])
+
+    assert doc.last_modified == when

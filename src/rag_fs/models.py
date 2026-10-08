@@ -9,6 +9,7 @@ class Document:
     root_id: str
     ext: str
     raw_text: str
+    last_modified: float
     content_type: str
     parse_status: str
     sha256: str #to know if a file was changed
