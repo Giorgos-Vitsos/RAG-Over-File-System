@@ -14,7 +14,7 @@ from pptx.shapes.group import GroupShape
 from pptx.presentation import Presentation as PptxPresentation
 from striprtf.striprtf import rtf_to_text
 from .text import read_text
-
+from odf.opendocument import load, OpenDocument
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
@@ -155,5 +155,17 @@ def read_rtf(path: Path)->str:
         raise ValueError("Not an .rtf file")
     final=rtf_to_text(text).strip()
     return final
-    
-    
+
+# def read_odf(path: Path)->str:
+#     file=load(path)
+#     kind=file.body.childNodes[0].tagName
+#     if kind=="office:text":
+#         return read_odt(file)
+#     elif kind=="office:presentation":
+#         return read_odp(file)
+#     else:
+#         raise ValueError("Not a recognized ODF file")
+
+# def read_odt(file:OpenDocument)->str:
+
+# def read_odp(file:OpenDocument)->str:
