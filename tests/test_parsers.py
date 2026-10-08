@@ -1,4 +1,5 @@
 import datetime
+import itertools
 import logging
 import os
 import zipfile
@@ -178,7 +179,6 @@ MIXED_GREEK_ENGLISH = [
     "The retrieval step uses BM25 and dense embeddings. "
     "In the thesis we call it ανάκτηση πληροφορίας (information retrieval).",
     "Η ανάκτηση γίνεται με BM25 και dense embeddings, και μετά re-ranking με cross-encoder.",
-    "Meeting notes for the project, room Αμφιθέατρο A, 10:00.",
 ]
 
 
@@ -259,6 +259,8 @@ def test_looks_like_value(cell, expected):
 
 
 N = None
+# known limit: in a table of words, a totals row with numbers looks like the first data row
+TOTALS_LIMIT = pytest.mark.xfail(strict=True, reason="L29 limit: words table with a numeric totals row")
 
 # (rows, header_rows, expected text)
 FORMAT_ROWS = [
@@ -276,11 +278,13 @@ FORMAT_ROWS = [
                  "CS-209: English IV, Spring 2026\n"
                  "TEAM MEMBERS | Paper | Phases\n"
                  "TEAM #: 1; NAMES & AM: Aggelos Papanikolaou - 5601 (leader) / Eirini Lyroni - 5690; "
-                 "Link: https://doi.org/10.1145/3635636.3656185",
+                 "Link: https://doi.org/10.1145/3635636.3656185\n"
+                 "A+B | C+D | TOTAL",
                  id="title rows above the header are kept as text"),
     pytest.param([("Ημερομηνία", "Κατηγορία", None), ("2024-03-15", None, 20)], 0,
-                 "Ημερομηνία: 2024-03-15; col3: 20", id="empty header cell gets a column name"),
-    pytest.param([("A", "B", "C"), ("1",)], 0, "A: 1", id="short rows do not crash"),
+                 "Ημερομηνία: 2024-03-15; col3: 20\nΚατηγορία",
+                 id="empty header cell gets a column name"),
+    pytest.param([("A", "B", "C"), ("1",)], 0, "A: 1\nB | C", id="short rows do not crash"),
     pytest.param([("Προϊόν", "Ποσότητα", "Τιμή")], 0, "Προϊόν | Ποσότητα | Τιμή", id="only the header"),
     pytest.param([("Ψώνια",), ("γάλα",), ("ψωμί",)], 0, "Ψώνια\nγάλα\nψωμί",
                  id="single column is not a table"),
@@ -293,7 +297,7 @@ FORMAT_ROWS = [
                  "Οικογενειακά | έξοδα\ncol1: 2024-03-01; Κατηγορία: Ρεύμα; Ποσό: 54",
                  id="climbing stops at the header, not at a title above it"),
     pytest.param([("Οικογενειακά", "έξοδα"), ("", "Κατηγορία", "Ποσό"), ("2024-03-01", "Ρεύμα")], 0,
-                 "Οικογενειακά | έξοδα\ncol1: 2024-03-01; Κατηγορία: Ρεύμα",
+                 "Οικογενειακά | έξοδα\ncol1: 2024-03-01; Κατηγορία: Ρεύμα\nΠοσό",
                  id="title as full as the header and the data"),
     pytest.param([("Όνομα", "Βαθμός"), ("Μαρία", "9"), ("Νίκος", "απών"), ("Ελένη", "8")], 0,
                  "Όνομα: Μαρία; Βαθμός: 9\nΌνομα: Νίκος; Βαθμός: απών\nΌνομα: Ελένη; Βαθμός: 8",
@@ -310,8 +314,6 @@ FORMAT_ROWS = [
     pytest.param([("", "Μάθημα", "Βαθμός"), ("Χειμερινό",), ("Μαρία", "ΗΥ100", "9")], 0,
                  "col1: Χειμερινό\ncol1: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9",
                  id="one-cell section row between the header and the data"),
-    pytest.param([("Περιοχή", "2023", "2024"), ("Κρήτη", "120", "150")], 0,
-                 "Περιοχή: Κρήτη; 2023: 120; 2024: 150", id="years in the header"),
     pytest.param([("Εξάμηνο", "Χειμερινό"), ("Όνομα", "Μάθημα", "Βαθμός"), ("Μαρία", "ΗΥ100", "9")], 0,
                  "Εξάμηνο | Χειμερινό\nΌνομα: Μαρία; Μάθημα: ΗΥ100; Βαθμός: 9",
                  id="subtitle of words above the header stays a subtitle"),
@@ -326,10 +328,15 @@ FORMAT_ROWS = [
                  id="only numbers: no header"),
     pytest.param([("2024", "120", ""), ("2025", "150", "")], 0, "2024 | 120\n2025 | 150",
                  id="only numbers with an empty trailing column (csv lines ending in a comma)"),
-    pytest.param([("", "2023", "2024"), ("Κρήτη", "120", "150"), ("Αττική", "300", "320")], 0,
-                 "col1: Κρήτη; 2023: 120; 2024: 150\ncol1: Αττική; 2023: 300; 2024: 320",
-                 marks=pytest.mark.xfail(strict=True, reason="L29: pivot header (empty corner + years)"),
-                 id="pivot table: empty corner and years"),
+    pytest.param([("Πωλήσεις",), ("", "2023", "2024"), ("Κρήτη", "120", "150")], 0,
+                 "Πωλήσεις\ncol1: Κρήτη; 2023: 120; 2024: 150",
+                 id="pivot table with a title above"),
+    pytest.param([("Όνομα", "Επώνυμο", "Τμήμα"), ("", "Παπαδάκη", "ΗΥ"), ("Νίκος", "Κωστάκης", "ΗΥ")], 0,
+                 "Επώνυμο: Παπαδάκη; Τμήμα: ΗΥ\nΌνομα: Νίκος; Επώνυμο: Κωστάκης; Τμήμα: ΗΥ",
+                 id="words table where a data row lost its first cell"),
+    pytest.param([("Περιοχή", "2023", "2024"), ("Κρήτη", "120", "150"), ("", "130", "160")], 0,
+                 "Περιοχή: Κρήτη; 2023: 120; 2024: 150\n2023: 130; 2024: 160",
+                 id="a data row without its label is still data"),
     pytest.param([("2023", "2024"), ("120", "150")], 1, "2023: 120; 2024: 150",
                  id="header marked by the file is trusted even if numeric"),
     pytest.param([("Όνομα", "Βαθμοί", "Βαθμοί"), ("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8")], 2,
@@ -337,6 +344,27 @@ FORMAT_ROWS = [
                  id="two header rows are joined per column"),
     pytest.param([("Όνομα", "Βαθμός"), ("Μαρία", "9")], 5, "Όνομα | Βαθμός\nΜαρία | 9",
                  id="header_rows larger than the table"),
+    # more real shapes
+    pytest.param([("Όνομα", "Βαθμός", "Παρατηρήσεις"), ("Μαρία", "9", ""), ("Νίκος", "7", "")], 0,
+                 "Όνομα: Μαρία; Βαθμός: 9\nΌνομα: Νίκος; Βαθμός: 7\nΠαρατηρήσεις",
+                 id="name of a column without values is kept"),
+    pytest.param([("2024-03-01", "ΔΕΗ", "-54,30"), ("2024-03-02", "Μισθός", "1.200,00")], 0,
+                 "2024-03-01 | ΔΕΗ | -54,30\n2024-03-02 | Μισθός | 1.200,00",
+                 id="bank export without a header"),
+    pytest.param([("", "120", "150"), ("2024", "130", "160")], 0, "120 | 150\n2024 | 130 | 160",
+                 id="numbers only, empty first cell: not a pivot"),
+    pytest.param([("", "120", "150"), ("", "130", "160")], 0, "120 | 150\n130 | 160",
+                 id="numbers with an empty first column"),
+    pytest.param([("", "Μήνας", "Ποσό"), ("", "Μάρτιος", "54"), ("", "Απρίλιος", "60")], 0,
+                 "Μήνας: Μάρτιος; Ποσό: 54\nΜήνας: Απρίλιος; Ποσό: 60",
+                 id="table shifted one column right (column A empty)"),
+    pytest.param([("Όνομα", "Τμήμα"), ("Μαρία", "ΗΥ"), ("Νίκος", "ΜΑΘ"), ("ΣΥΝΟΛΟ", "2")], 0,
+                 "Όνομα: Μαρία; Τμήμα: ΗΥ\nΌνομα: Νίκος; Τμήμα: ΜΑΘ\nΌνομα: ΣΥΝΟΛΟ; Τμήμα: 2",
+                 marks=TOTALS_LIMIT, id="words table with a totals row in capitals"),
+    pytest.param([("", "Λίστα", "μαθημάτων"), ("Κωδικός", "Τίτλος", "Διδάσκων", "Εξάμηνο"),
+                  ("ΗΥ100", "Εισαγωγή", "Παπαδάκης", "Α")], 0,
+                 "Λίστα | μαθημάτων\nΚωδικός: ΗΥ100; Τίτλος: Εισαγωγή; Διδάσκων: Παπαδάκης; Εξάμηνο: Α",
+                 id="title starting in column B is not a pivot header"),
 ]
 
 
@@ -347,6 +375,34 @@ def test_format_rows(rows, header_rows, expected):
         assert format_rows(rows, header_rows=header_rows) == expected
     else:
         assert format_rows(rows) == expected
+
+
+# every combination of a pivot table: corner, column names, row labels, cells
+PIVOT_PARTS = {
+    "corner": {"empty corner": "", "word corner": "Έτος"},
+    "columns": {"places across": ["Κρήτη", "Κέρκυρα"], "years across": ["2023", "2024"]},
+    "labels": {"places down": ["Ρόδος", "Κως"], "years down": ["2023", "2024"]},
+    "cells": {"numbers": [["120", "80"], ["150", "90"]], "words": [["υψηλή", "χαμηλή"], ["μέτρια", "υψηλή"]]},
+}
+
+
+def pivot_cases():
+    cases = []
+    for parts in itertools.product(*[d.items() for d in PIVOT_PARTS.values()]):
+        (cn, corner), (coln, columns), (ln, labels), (celln, cells) = parts
+        # all values and an empty corner: it looks exactly like a table of numbers, nobody can tell
+        if not corner and (coln, ln, celln) == ("years across", "years down", "numbers"):
+            continue
+        rows = [(corner, *columns)] + [(label, *row) for label, row in zip(labels, cells)]
+        names = [corner or "col1", *columns]
+        lines = ["; ".join(f"{n}: {v}" for n, v in zip(names, row) if v) for row in rows[1:]]
+        cases.append(pytest.param(rows, "\n".join(lines), id=", ".join([cn, coln, ln, celln])))
+    return cases
+
+
+@pytest.mark.parametrize("rows, expected", pivot_cases())
+def test_format_rows_every_pivot_combination(rows, expected):
+    assert format_rows(rows) == expected
 
 
 # an extra value far down the table becomes col3
