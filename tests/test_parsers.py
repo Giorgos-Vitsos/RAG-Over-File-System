@@ -509,10 +509,6 @@ def test_read_ods_all_sheets(tmp_path):
     assert read_ods(f) == EXPECTED_TWO_SHEETS
 
 
-ODS_STEP = pytest.mark.xfail(strict=True, reason="step 4: ods read with pandas")
-ODS_PENDING = {'cells covered by a merge, repeated', 'date with time and numbers shown differently', 'paragraphs, spaces and line breaks in a cell'}
-
-
 # ods cells and rows written the way libreoffice writes them
 def ods_cell(*paragraphs, **attrs):
     cell = TableCell(**attrs)
@@ -587,6 +583,13 @@ ODS_CASES = {
         ods_row(ods_cell(numbercolumnsrepeated=3), numberrowsrepeated=5),
         ods_row(ods_cell(numbercolumnsspanned=2), CoveredTableCell(), ods_cell()),
     ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8"),
+    "merge after empty rows and an empty cell": ([
+        ods_row(S_("Όνομα"), S_("Σχόλιο"), S_("Γραπτό"), S_("Προφορικό")),
+        ods_row(S_("Μαρία"), ods_cell(), S_("9"), S_("8")),
+        ods_row(ods_cell(numbercolumnsrepeated=4), numberrowsrepeated=2),
+        ods_row(S_("Νίκος"), ods_cell(), ods_cell("απαλλαγή", valuetype="string", numbercolumnsspanned=2),
+                CoveredTableCell()),
+    ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\nΌνομα: Νίκος; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή\nΣχόλιο"),
     "a comment is not the cell text": ([
         ods_row(S_("Όνομα"), S_("Βαθμός")), ods_row(commented_cell(), S_("9")),
     ], "Όνομα: Μαρία; Βαθμός: 9"),
@@ -594,9 +597,7 @@ ODS_CASES = {
 
 
 # ods files as libreoffice writes them
-@pytest.mark.parametrize("rows, expected", [
-    pytest.param(rows, expected, marks=[ODS_STEP] if name in ODS_PENDING else [], id=name)
-    for name, (rows, expected) in ODS_CASES.items()])
+@pytest.mark.parametrize("rows, expected", ODS_CASES.values(), ids=ODS_CASES.keys())
 def test_read_ods_cells_and_rows(tmp_path, rows, expected):
     f = tmp_path / "book.ods"
     write_ods(f, rows)
@@ -623,8 +624,8 @@ def write_ods(path, rows, header_rows=0, group=False):
 # the header the file marks is used even when it is only numbers; rows inside groups are read
 @pytest.mark.parametrize("header_rows, group, expected", [
     (0, False, "2023 | 2024\n120 | 340"),
-    pytest.param(1, False, "2023: 120; 2024: 340", marks=ODS_STEP, id="header marked by the file"),
-    pytest.param(1, True, "2023: 120; 2024: 340", marks=ODS_STEP, id="header marked, data in a row group"),
+    pytest.param(1, False, "2023: 120; 2024: 340", id="header marked by the file"),
+    pytest.param(1, True, "2023: 120; 2024: 340", id="header marked, data in a row group"),
 ])
 def test_read_ods_header_rows(tmp_path, header_rows, group, expected):
     f = tmp_path / "book.ods"
@@ -697,7 +698,6 @@ def test_read_xlsx_formula_uses_the_value_excel_saved(tmp_path):
 
 
 # a real date cell in ods should look like in xlsx, without 00:00:00
-@pytest.mark.xfail(strict=True, reason="L31: ods dates come out with 00:00:00")
 def test_read_ods_real_date_cells(tmp_path):
     f = tmp_path / "dates.ods"
     make_ods(f, [("Έξοδα", [["Ημερομηνία", "Ποσό"], [datetime.datetime(2024, 3, 1), 54]])])
@@ -832,21 +832,8 @@ def merged_xls(shape, f):
 
 
 MERGE_FORMATS = {"docx": merged_docx, "pptx": merged_pptx, "xlsx": merged_xlsx, "xls": merged_xls, "ods": merged_ods}
-# ods reads the covered cells as empty until it is read with odfpy
-EMPTY_TODAY = set(MERGE_SHAPES) - {"empty merged area", "title over a table of words", "title over a table of numbers"}
-MERGE_PENDING = {"step 4": {("ods", s) for s in EMPTY_TODAY}}
-
-
-def merge_cases():
-    cases = []
-    for fmt, shape in itertools.product(MERGE_FORMATS, MERGE_SHAPES):
-        marks = [pytest.mark.xfail(strict=True, reason=f"L30, {step}")
-                 for step, pending in MERGE_PENDING.items() if (fmt, shape) in pending]
-        cases.append(pytest.param(fmt, shape, marks=marks, id=f"{fmt}, {shape}"))
-    return cases
-
-
-@pytest.mark.parametrize("fmt, shape", merge_cases())
+@pytest.mark.parametrize("fmt, shape", [pytest.param(fmt, shape, id=f"{fmt}, {shape}")
+                                        for fmt, shape in itertools.product(MERGE_FORMATS, MERGE_SHAPES)])
 def test_merged_cells(tmp_path, fmt, shape):
     assert MERGE_FORMATS[fmt](shape, tmp_path / f"merged.{fmt}") == MERGE_SHAPES[shape][2]
 
@@ -869,10 +856,6 @@ def test_read_xlsx_merges_from_the_xml(tmp_path, monkeypatch, chunk, prefix):
     assert read_xlsx(f) == "# Sheet: Sheet\n" + MERGE_SHAPES["across"][2]
 
 
-# merges in the empty area around a table
-OUTSIDE = pytest.mark.xfail(strict=True, reason="fill_merged crashes on a merge outside the rows")
-
-
 # the value of a merge goes into every cell it covers
 @pytest.mark.parametrize("rows, merges, expected", [
     ([("a", "b"), ("c", "d")], [], [["a", "b"], ["c", "d"]]),
@@ -881,10 +864,10 @@ OUTSIDE = pytest.mark.xfail(strict=True, reason="fill_merged crashes on a merge 
     ([("a", "b"), (None, "c")], [(0, 0, 3, 0)], [["a", "b"], ["a", "c"]]),
     ([(54, None), (None, None)], [(0, 0, 1, 1)], [[54, 54], [54, 54]]),
     ([(None, None), ("x", None)], [(0, 0, 0, 1), (1, 0, 1, 1)], [[None, None], ["x", "x"]]),
-    pytest.param([("a",)], [(3, 0, 4, 1)], [["a"]], marks=OUTSIDE, id="merge below the table"),
-    pytest.param([("a",)], [(0, 2, 0, 3)], [["a"]], marks=OUTSIDE, id="merge right of a short row"),
+    ([("a",)], [(3, 0, 4, 1)], [["a"]]),
+    ([("a",)], [(0, 2, 0, 3)], [["a"]]),
 ], ids=["no merges", "across", "past the end of a short row", "past the last row", "raw value kept",
-        "empty merge"] + ["merge below the table", "merge right of a short row"])
+        "empty merge", "merge below the table", "merge right of a short row"])
 def test_fill_merged(rows, merges, expected):
     assert fill_merged(rows, merges) == expected
 
