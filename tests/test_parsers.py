@@ -690,6 +690,24 @@ def test_merged_cells(tmp_path, fmt, shape):
     assert MERGE_FORMATS[fmt](shape, tmp_path / f"merged.{fmt}") == MERGE_SHAPES[shape][2]
 
 
+# xlsx merges from the sheet xml: tags cut between two chunks, and tags with a prefix
+@pytest.mark.parametrize("chunk, prefix", [(7, ""), (1024 * 1024, "x:")], ids=["tiny chunks", "x: prefix"])
+def test_read_xlsx_merges_from_the_xml(tmp_path, monkeypatch, chunk, prefix):
+    merged_xlsx("across", tmp_path / "plain.xlsx")
+    f = tmp_path / "merged.xlsx"
+    with zipfile.ZipFile(tmp_path / "plain.xlsx") as zin, zipfile.ZipFile(f, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                ns = b'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+                data = data.replace(ns, ns + b" " + ns.replace(b"xmlns", b"xmlns:x"), 1)
+                data = data.replace(b"<mergeCell ", f"<{prefix}mergeCell ".encode())
+            zout.writestr(item, data)
+    monkeypatch.setattr(tabular, "MB", chunk)
+
+    assert read_xlsx(f) == "# Sheet: Sheet\n" + MERGE_SHAPES["across"][2]
+
+
 # the value of a merge goes into every cell it covers
 @pytest.mark.parametrize("rows, merges, expected", [
     ([("a", "b"), ("c", "d")], [], [["a", "b"], ["c", "d"]]),
