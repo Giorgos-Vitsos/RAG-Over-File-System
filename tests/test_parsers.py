@@ -29,7 +29,7 @@ from rag_fs.ingest.parsers.office import (
     read_word_variants,
 )
 from rag_fs.ingest.parsers.tabular import (
-    cell_to_str, format_rows, read_csv, read_ods, read_xls, read_xlsx,
+    cell_to_str, fill_merged, format_rows, read_csv, read_ods, read_xls, read_xlsx,
 )
 from rag_fs.ingest.parsers.text import read_text
 
@@ -564,86 +564,152 @@ def test_parse_file_uses_the_tabular_readers(tmp_path):
         assert doc.parse_status == "ok"
 
 
-GRADES = [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Νίκος", "απαλλαγή", "")]
-EXPECTED_MERGED = (
-    "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\n"
-    "Όνομα: Νίκος; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή"
-)
-MERGED = pytest.mark.xfail(strict=True, reason="L30: the covered cell is read as empty")
+# every merge shape, in every format that has merged cells
+# (rows as the user sees them: None = covered by a merge, merges as (top, left, bottom, right))
+MERGE_SHAPES = {
+    "across": (
+        [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Νίκος", "απαλλαγή", N)], [(2, 1, 2, 2)],
+        "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\nΌνομα: Νίκος; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή"),
+    "down": (
+        [("Κατηγορία", "Μήνας", "Ποσό"), ("Ρεύμα", "Μάρτιος", "54"), (N, "Απρίλιος", "60")], [(1, 0, 2, 0)],
+        "Κατηγορία: Ρεύμα; Μήνας: Μάρτιος; Ποσό: 54\nΚατηγορία: Ρεύμα; Μήνας: Απρίλιος; Ποσό: 60"),
+    "down in the last column": (
+        [("Όνομα", "Γραπτό", "Σχόλιο"), ("Μαρία", "9", "επανεξέταση"), ("Νίκος", "7", N)], [(1, 2, 2, 2)],
+        "Όνομα: Μαρία; Γραπτό: 9; Σχόλιο: επανεξέταση\nΌνομα: Νίκος; Γραπτό: 7; Σχόλιο: επανεξέταση"),
+    "2x2 block": (
+        [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "απαλλαγή", N), ("Νίκος", N, N)], [(1, 1, 2, 2)],
+        "Όνομα: Μαρία; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή\nΌνομα: Νίκος; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή"),
+    "empty merged area": (
+        [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Νίκος", N, N)], [(2, 1, 2, 2)],
+        "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\nΌνομα: Νίκος"),
+    "title over a table of words": (
+        [("Κατάλογος", N, N), ("Όνομα", "Επώνυμο", "Τμήμα"), ("Μαρία", "Παπαδάκη", "Φυσική"),
+         ("Νίκος", "Λαμπράκης", "Χημεία")], [(0, 0, 0, 2)],
+        "Κατάλογος\nΌνομα: Μαρία; Επώνυμο: Παπαδάκη; Τμήμα: Φυσική\nΌνομα: Νίκος; Επώνυμο: Λαμπράκης; Τμήμα: Χημεία"),
+    "title over a table of numbers": (
+        [("Βαθμοί", N, N), ("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8")], [(0, 0, 0, 2)],
+        "Βαθμοί\nΌνομα: Μαρία; Γραπτό: 9; Προφορικό: 8"),
+    "section row between data rows": (
+        [("Όνομα", "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8"), ("Επαναληπτική", N, N), ("Νίκος", "7", "6")],
+        [(2, 0, 2, 2)],
+        "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\nΕπαναληπτική\nΌνομα: Νίκος; Γραπτό: 7; Προφορικό: 6"),
+}
 
 
-# merged cells in a word table
-def test_read_docx_merged_cells(tmp_path):
+def merged_docx(shape, f):
+    rows, merges, _ = MERGE_SHAPES[shape]
     d = docx.Document()
-    t = d.add_table(rows=3, cols=3)
-    for r, row in enumerate(GRADES):
+    t = d.add_table(rows=len(rows), cols=len(rows[0]))
+    for r, row in enumerate(rows):
         for c, value in enumerate(row):
-            t.cell(r, c).text = value
-    t.cell(2, 1).merge(t.cell(2, 2)).text = "απαλλαγή"
-    f = tmp_path / "merged.docx"
+            t.cell(r, c).text = value or ""
+    for top, left, bottom, right in merges:
+        t.cell(top, left).merge(t.cell(bottom, right)).text = rows[top][left] or ""
     d.save(str(f))
+    return read_docx(f)
 
-    assert read_docx(f) == EXPECTED_MERGED
 
-
-# merged cells in a powerpoint table
-@MERGED
-def test_read_pptx_merged_cells(tmp_path):
+def merged_pptx(shape, f):
+    rows, merges, _ = MERGE_SHAPES[shape]
     p = pptx.Presentation()
     slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
-    t = slide.shapes.add_table(3, 3, PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(2)).table
-    for r, row in enumerate(GRADES):
+    t = slide.shapes.add_table(len(rows), len(rows[0]), PptxInches(1), PptxInches(1), PptxInches(6),
+                               PptxInches(2)).table
+    for r, row in enumerate(rows):
         for c, value in enumerate(row):
-            t.cell(r, c).text = value
-    t.cell(2, 1).merge(t.cell(2, 2))
-    f = tmp_path / "merged.pptx"
+            t.cell(r, c).text = value or ""
+    for top, left, bottom, right in merges:
+        t.cell(top, left).merge(t.cell(bottom, right))
+        t.cell(top, left).text = rows[top][left] or ""
     p.save(str(f))
+    return read_pptx(f).removeprefix("# Slide 1\n\n")
 
-    assert read_pptx(f) == "# Slide 1\n\n" + EXPECTED_MERGED
 
-
-# merged cells in excel, across and down
-@MERGED
-@pytest.mark.parametrize("rows, merge, expected", [
-    (GRADES, "B3:C3", EXPECTED_MERGED),
-    ([("Κατηγορία", "Μήνας", "Ποσό"), ("Ρεύμα", "Μάρτιος", 54), (None, "Απρίλιος", 60)], "A2:A3",
-     "Κατηγορία: Ρεύμα; Μήνας: Μάρτιος; Ποσό: 54\nΚατηγορία: Ρεύμα; Μήνας: Απρίλιος; Ποσό: 60"),
-], ids=["across", "down"])
-def test_read_xlsx_merged_cells(tmp_path, rows, merge, expected):
+def merged_xlsx(shape, f):
+    rows, merges, _ = MERGE_SHAPES[shape]
     book = openpyxl.Workbook()
     sheet = book.active
     assert sheet is not None
-    sheet.title = "Φύλλο"
     for row in rows:
         sheet.append(row)
-    sheet.merge_cells(merge)
-    f = tmp_path / "merged.xlsx"
+    for top, left, bottom, right in merges:
+        sheet.merge_cells(start_row=top + 1, start_column=left + 1, end_row=bottom + 1, end_column=right + 1)
     book.save(f)
+    return read_xlsx(f).removeprefix("# Sheet: Sheet\n")
 
-    assert read_xlsx(f) == "# Sheet: Φύλλο\n" + expected
 
-
-# merged cells in ods
-@MERGED
-def test_read_ods_merged_cells(tmp_path):
+def merged_ods(shape, f):
+    rows, merges, _ = MERGE_SHAPES[shape]
+    origins = {(t, l): (b - t + 1, r - l + 1) for t, l, b, r in merges}
+    covered = {(r, c) for t, l, b, rr in merges for r in range(t, b + 1) for c in range(l, rr + 1)} - set(origins)
     doc = OpenDocumentSpreadsheet()
-    table = OdfTable(name="Βαθμοί")
-    for row in GRADES:
+    table = OdfTable(name="Φύλλο")
+    for r, row in enumerate(rows):
         tr = TableRow()
         for c, value in enumerate(row):
-            if row[0] == "Νίκος" and c == 2:
+            if (r, c) in covered:
                 tr.addElement(CoveredTableCell())
                 continue
-            span = 2 if row[0] == "Νίκος" and c == 1 else 1
-            cell = TableCell(valuetype="string", numbercolumnsspanned=span)
-            cell.addElement(OdfP(text=value))
+            down, across = origins.get((r, c), (1, 1))
+            cell = TableCell(valuetype="string", numberrowsspanned=down, numbercolumnsspanned=across)
+            if value:
+                cell.addElement(OdfP(text=value))
             tr.addElement(cell)
         table.addElement(tr)
     doc.spreadsheet.addElement(table)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
-    f = tmp_path / "merged.ods"
     doc.save(str(f))
+    return read_ods(f).removeprefix("# Sheet: Φύλλο\n")
 
-    assert read_ods(f) == "# Sheet: Βαθμοί\n" + EXPECTED_MERGED
+
+# nothing writes xls today: one sheet per shape, made once with xlwt
+def merged_xls(shape, f):
+    sheets = {}
+    for block in read_xls(FIXTURES / "merged.xls").split("\n\n"):
+        name, text = block.removeprefix("# Sheet: ").split("\n", 1)
+        sheets[name] = text
+    return sheets[shape]
+
+
+MERGE_FORMATS = {"docx": merged_docx, "pptx": merged_pptx, "xlsx": merged_xlsx, "xls": merged_xls, "ods": merged_ods}
+# ods reads the covered cells as empty until it is read with odfpy
+EMPTY_TODAY = set(MERGE_SHAPES) - {"empty merged area", "title over a table of words", "title over a table of numbers"}
+MERGE_PENDING = {"step 4": {("ods", s) for s in EMPTY_TODAY}}
+
+
+def merge_cases():
+    cases = []
+    for fmt, shape in itertools.product(MERGE_FORMATS, MERGE_SHAPES):
+        marks = [pytest.mark.xfail(strict=True, reason=f"L30, {step}")
+                 for step, pending in MERGE_PENDING.items() if (fmt, shape) in pending]
+        cases.append(pytest.param(fmt, shape, marks=marks, id=f"{fmt}, {shape}"))
+    return cases
+
+
+@pytest.mark.parametrize("fmt, shape", merge_cases())
+def test_merged_cells(tmp_path, fmt, shape):
+    assert MERGE_FORMATS[fmt](shape, tmp_path / f"merged.{fmt}") == MERGE_SHAPES[shape][2]
+
+
+# the value of a merge goes into every cell it covers
+@pytest.mark.parametrize("rows, merges, expected", [
+    ([("a", "b"), ("c", "d")], [], [["a", "b"], ["c", "d"]]),
+    ([("a", None, None)], [(0, 0, 0, 2)], [["a", "a", "a"]]),
+    ([("a",), ("b",)], [(0, 0, 0, 2)], [["a", "a", "a"], ["b"]]),
+    ([("a", "b"), (None, "c")], [(0, 0, 3, 0)], [["a", "b"], ["a", "c"]]),
+    ([(54, None), (None, None)], [(0, 0, 1, 1)], [[54, 54], [54, 54]]),
+    ([(None, None), ("x", None)], [(0, 0, 0, 1), (1, 0, 1, 1)], [[None, None], ["x", "x"]]),
+], ids=["no merges", "across", "past the end of a short row", "past the last row", "raw value kept",
+        "empty merge"])
+def test_fill_merged(rows, merges, expected):
+    assert fill_merged(rows, merges) == expected
+
+
+# a name merged over two columns, under it the names of the two columns
+def test_merged_header_over_two_rows():
+    rows = fill_merged([("Όνομα", "Βαθμοί", None), (None, "Γραπτό", "Προφορικό"), ("Μαρία", "9", "8")],
+                               [(0, 0, 1, 0), (0, 1, 0, 2)])
+
+    assert format_rows(rows, header_rows=2) == "Όνομα: Μαρία; Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8"
 
 
 # word style name to heading level (0 means not a heading)

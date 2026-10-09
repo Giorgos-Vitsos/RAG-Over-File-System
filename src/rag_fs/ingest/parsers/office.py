@@ -2,7 +2,7 @@ from pathlib import Path
 import docx
 from docx.table import Table
 from docx.text.paragraph import Paragraph
-from .tabular import format_rows
+from .tabular import format_rows,fill_merged
 from docx.document import Document as DocxDocument
 import io
 import zipfile
@@ -135,13 +135,20 @@ def format_shape(shape:BaseShape)->list[str]:
             output.append(text)
     elif isinstance(shape,GraphicFrame):
         if shape.has_table:
+            table=shape.table
+            merges=[]
+            for r in range(len(table.rows)):
+                for c in range(len(table.columns)):
+                    cell=table.cell(r,c)
+                    if cell.is_merge_origin:#the top left cell of a merge knows its size
+                        merges.append((r,c,r+cell.span_height-1,c+cell.span_width-1))
             rows=[]
-            for row in shape.table.rows:
+            for row in table.rows:
                 cells=[]
                 for cell in row.cells:
                     cells.append(cell.text)
                 rows.append(cells)
-            text=format_rows(rows).strip()
+            text=format_rows(fill_merged(rows,merges)).strip()
             if text:
                 output.append(text)     
     for alt in shape._element.xpath("./*/p:cNvPr/@descr"):

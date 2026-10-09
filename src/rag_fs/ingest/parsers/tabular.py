@@ -6,6 +6,10 @@ from .text import read_text
 import csv
 import io
 import xlrd  
+import re
+import zipfile
+from openpyxl.worksheet.cell_range import CellRange
+from ..file_scanner import MB
 
 HEADER_SEARCH_ROWS = 10 #the number of rows in which we search for a header
 
@@ -18,19 +22,41 @@ def cell_to_str(value)->str:
         return str(int(value))
     return str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " / ").strip()#a cell can have multiply lines of text now we indicate it with /
 
+def fill_merged(rows, merges):
+    filled=[list(row) for row in rows]#we make list from tuple to modify value
+    for top,left,bottom,right in merges:
+        value=filled[top][left]#the value of the merge is in its top left cell
+        last=min(bottom,len(filled)-1)#a merge cant go past the last row
+        for r in range(top,last+1):
+            row=filled[r]
+            while len(row)<=right:#we create empty cells
+                row.append(None)
+            for c in range(left,right+1):#we add the value
+                row[c]=value
+    return filled
+
+
+def all_same(cells: list[str]) -> bool:
+    filled=[c for c in cells if c]
+    return len(filled)>=2 and len(set(filled))==1
 
 def plain_row(cells: list[str]) -> str:
     filled = []
     for c in cells:
         if c:
             filled.append(c)
+    if all_same(filled):#if dupe we write only one
+        return filled[0]
     return " | ".join(filled)
 
 
 def find_header(rows: list[list[str]]) -> int:
     counts = []
     for row in rows[:HEADER_SEARCH_ROWS]:
-        counts.append(len([c for c in row if c]))
+        if all_same(row):#a merged row counts as one cell
+            counts.append(1)
+        else:
+            counts.append(len([c for c in row if c]))
     h=counts.index(max(counts))
     widest=counts[h]#we find the row with the most (not empty) cells from the first HEADER_SEARCH_ROWS rows
     first_data=-1#keeps the index of the first data row (not tile or header)
@@ -114,6 +140,9 @@ def format_rows(rows, header_rows: int = 0)->str:
             lines.append(plain_row(row))
     used=set()#the columns that got at least one value
     for row in data_rows:
+        if all_same(row):#a merged section row is not a value of the columns
+            lines.append(plain_row(row))
+            continue
         parts = []
         for i, value in enumerate(row):
             if value:
@@ -126,11 +155,31 @@ def format_rows(rows, header_rows: int = 0)->str:
         lines.append(" | ".join(unused))
     return "\n".join(lines)
 
+MERGE_CELL=re.compile(rb'<(?:\w+:)?mergeCell ref="([^"]+)"')#meged cells are tagged with this regex
+
+def xlsx_merges(path: Path, sheet) -> list[tuple[int,int,int,int]]:
+    found=set()#we keep each tag only once
+    with zipfile.ZipFile(path) as z, z.open(sheet._worksheet_path) as f:#the xml of the sheet inside the zip
+        tail=b""
+        while True:
+            chunk=f.read(MB)#we only read a mb to not tank the memory
+            if not chunk:#when the file ends
+                break
+            data=tail+chunk#if it was broken because of the chunking we recreate it
+            for ref in MERGE_CELL.findall(data):
+                found.add(ref.decode())
+            tail=data[-100:]#we keep the last part in case we split it by accident
+    merges=[]
+    for ref in found:#we make the extracted tags readable for our function
+        cr=CellRange(ref)
+        merges.append((cr.min_row-1,cr.min_col-1,cr.max_row-1,cr.max_col-1))
+    return merges
+
 def read_xlsx(path: Path)->str:
     book=openpyxl.load_workbook(path,read_only=True,data_only=True)#for macros we only want the output,data_only=True does that
     sheets=[]
     for sheet in book.worksheets:
-        rows=list(sheet.iter_rows(values_only=True))#we remove data like colour,font,etc. from each
+        rows=fill_merged(list(sheet.iter_rows(values_only=True)),xlsx_merges(path,sheet))#we remove data like colour,font,etc. from each and we merge if needed
         sheets.append((sheet.title,rows))
     book.close()
     return format_sheets(sheets)
@@ -164,7 +213,7 @@ def read_csv(path: Path)->str:#normal text with seperators
     return format_rows(rows)
 
 def read_xls(path: Path)->str:
-    book=xlrd.open_workbook(str(path))
+    book=xlrd.open_workbook(str(path),formatting_info=True)#we need formatting for merged cells
     sheets=[]
     for sheet in book.sheets():
         rows=[]
@@ -177,7 +226,10 @@ def read_xls(path: Path)->str:
                     value=xlrd.xldate_as_datetime(float(value),book.datemode)#we convert it
                 row.append(value)
             rows.append(row)
-        sheets.append((sheet.name,rows))
+        merges=[]
+        for rlo,rhi,clo,chi in sheet.merged_cells:#different merge formatting
+            merges.append((rlo,clo,rhi-1,chi-1))    
+        sheets.append((sheet.name,fill_merged(rows,merges)))
     book.release_resources()
     return format_sheets(sheets)
 
