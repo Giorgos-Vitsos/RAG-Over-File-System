@@ -2,6 +2,7 @@ import datetime
 import itertools
 import logging
 import os
+import re
 import zipfile
 from pathlib import Path
 
@@ -12,9 +13,10 @@ import pptx
 import pytest
 from docx.oxml import parse_xml
 from docx.shared import Inches
-from odf.opendocument import OpenDocumentSpreadsheet
-from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableRow
-from odf.text import P as OdfP
+from odf.office import Annotation
+from odf.opendocument import OpenDocumentSpreadsheet, OpenDocumentText
+from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableHeaderRows, TableRow, TableRowGroup
+from odf.text import LineBreak as OdfLineBreak, P as OdfP, S as OdfS
 from PIL import Image
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
@@ -244,6 +246,14 @@ def test_read_text_rejects_binary(tmp_path, data):
     ("line one\nline two", "line one / line two"),
     ("line one\r\nline two", "line one / line two"),   # Windows
     ("line one\rline two", "line one / line two"),     # old Mac
+    *[pytest.param(value, expected, id=name) for name, value, expected in [
+        # google docs leaves empty paragraphs inside table cells
+        ("empty paragraphs at the end", "ε) Ραντεβού\n\n\n", "ε) Ραντεβού"),
+        ("empty paragraph between", "α) one\n\nβ) two", "α) one / β) two"),
+        ("empty and blank first", "\n  \nline", "line"),
+        ("spaces around the break", "line one  \n  line two", "line one / line two"),
+        ("empty windows line", "a\r\n\r\nb", "a / b"),
+    ]],
 ])
 def test_cell_to_str(value, expected):
     assert cell_to_str(value) == expected
@@ -494,9 +504,160 @@ def test_read_xlsx_all_sheets_and_skips_empty_ones(tmp_path):
 def test_read_ods_all_sheets(tmp_path):
     f = tmp_path / "book.ods"
     rows = [["Ημερομηνία", "Κατηγορία", "Ποσό"], ["2024-03-01", "Ρεύμα", 54]]
-    make_ods(f, [("Έξοδα", rows), ("Έσοδα", INCOME)])
+    make_ods(f, [("Έξοδα", rows), ("Κενό", []), ("Έσοδα", INCOME)])
 
     assert read_ods(f) == EXPECTED_TWO_SHEETS
+
+
+ODS_STEP = pytest.mark.xfail(strict=True, reason="step 4: ods read with pandas")
+ODS_PENDING = {'cells covered by a merge, repeated', 'date with time and numbers shown differently', 'paragraphs, spaces and line breaks in a cell'}
+
+
+# ods cells and rows written the way libreoffice writes them
+def ods_cell(*paragraphs, **attrs):
+    cell = TableCell(**attrs)
+    for p in paragraphs:
+        cell.addElement(OdfP(text=p) if isinstance(p, str) else p)
+    return cell
+
+
+def ods_row(*cells, **attrs):
+    row = TableRow(**attrs)
+    for cell in cells:
+        row.addElement(cell)
+    return row
+
+
+# a paragraph with two spaces, a line break and more text
+def spaced_paragraph():
+    p = OdfP(text="β")
+    p.addElement(OdfS(c=2))
+    p.addText("γ")
+    p.addElement(OdfLineBreak())
+    p.addText("δ")
+    return p
+
+
+def commented_cell():
+    note = Annotation()
+    note.addElement(OdfP(text="σχόλιο"))
+    cell = ods_cell(valuetype="string")
+    cell.addElement(note)
+    cell.addElement(OdfP(text="Μαρία"))
+    return cell
+
+
+S_ = lambda text: ods_cell(text, valuetype="string")  # noqa: E731
+names = lambda: ods_row(S_("Όνομα"), S_("Γραπτό"), S_("Προφορικό"))  # noqa: E731
+ODS_CASES = {
+    "empty tail like libreoffice": ([
+        names(),
+        ods_row(S_("Μαρία"), ods_cell("9", valuetype="float", value="9"), S_("8"), ods_cell(numbercolumnsrepeated=1021)),
+        ods_row(ods_cell(numbercolumnsrepeated=1024), numberrowsrepeated=1048574),
+    ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8"),
+    "value repeated across columns": ([
+        names(), ods_row(S_("Μαρία"), ods_cell("9", valuetype="float", value="9", numbercolumnsrepeated=2)),
+    ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 9"),
+    "row repeated": ([
+        names(), ods_row(S_("Μαρία"), S_("9"), S_("8"), numberrowsrepeated=2),
+    ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\nΌνομα: Μαρία; Γραπτό: 9; Προφορικό: 8"),
+    "empty rows between": ([
+        names(), ods_row(S_("Μαρία"), S_("9"), S_("8")),
+        ods_row(ods_cell(numbercolumnsrepeated=3), numberrowsrepeated=4),
+        ods_row(S_("Νίκος"), S_("7"), S_("6")),
+    ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8\nΌνομα: Νίκος; Γραπτό: 7; Προφορικό: 6"),
+    "cells covered by a merge, repeated": ([
+        ods_row(S_("Όνομα"), S_("Γραπτό"), S_("Προφορικό"), S_("Εργασία")),
+        ods_row(S_("Μαρία"), ods_cell("απαλλαγή", valuetype="string", numbercolumnsspanned=3),
+                CoveredTableCell(numbercolumnsrepeated=2)),
+    ], "Όνομα: Μαρία; Γραπτό: απαλλαγή; Προφορικό: απαλλαγή; Εργασία: απαλλαγή"),
+    "date with time and numbers shown differently": ([
+        ods_row(S_("Ημερομηνία"), S_("Ποσό"), S_("Ποσοστό"), S_("Τιμή")),
+        ods_row(ods_cell("01/03/24 14:30", valuetype="date", datevalue="2024-03-01T14:30:00"),
+                ods_cell("54,50", valuetype="float", value="54.5"),
+                ods_cell("25%", valuetype="percentage", value="0.25"),
+                ods_cell("12,00 €", valuetype="currency", currency="EUR", value="12")),
+    ], "Ημερομηνία: 2024-03-01 14:30:00; Ποσό: 54.5; Ποσοστό: 0.25; Τιμή: 12"),
+    "paragraphs, spaces and line breaks in a cell": ([
+        ods_row(S_("Όνομα"), S_("Σημειώσεις")),
+        ods_row(S_("Μαρία"), ods_cell("α", spaced_paragraph(), valuetype="string")),
+    ], "Όνομα: Μαρία; Σημειώσεις: α / β  γ / δ"),
+    "merge in the empty area below the table": ([
+        names(), ods_row(S_("Μαρία"), S_("9"), S_("8")),
+        ods_row(ods_cell(numbercolumnsrepeated=3), numberrowsrepeated=5),
+        ods_row(ods_cell(numbercolumnsspanned=2), CoveredTableCell(), ods_cell()),
+    ], "Όνομα: Μαρία; Γραπτό: 9; Προφορικό: 8"),
+    "a comment is not the cell text": ([
+        ods_row(S_("Όνομα"), S_("Βαθμός")), ods_row(commented_cell(), S_("9")),
+    ], "Όνομα: Μαρία; Βαθμός: 9"),
+}
+
+
+# ods files as libreoffice writes them
+@pytest.mark.parametrize("rows, expected", [
+    pytest.param(rows, expected, marks=[ODS_STEP] if name in ODS_PENDING else [], id=name)
+    for name, (rows, expected) in ODS_CASES.items()])
+def test_read_ods_cells_and_rows(tmp_path, rows, expected):
+    f = tmp_path / "book.ods"
+    write_ods(f, rows)
+
+    assert read_ods(f) == "# Sheet: Φύλλο\n" + expected
+
+
+# writes an ods with one sheet; the first header_rows rows go in table:table-header-rows, the rest in a row group
+def write_ods(path, rows, header_rows=0, group=False):
+    doc = OpenDocumentSpreadsheet()
+    table = OdfTable(name="Φύλλο")
+    header = TableHeaderRows()
+    body = TableRowGroup() if group else table
+    if header_rows:
+        table.addElement(header)
+    if group:
+        table.addElement(body)
+    for i, row in enumerate(rows):
+        (header if i < header_rows else body).addElement(row)
+    doc.spreadsheet.addElement(table)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(path))
+
+
+# the header the file marks is used even when it is only numbers; rows inside groups are read
+@pytest.mark.parametrize("header_rows, group, expected", [
+    (0, False, "2023 | 2024\n120 | 340"),
+    pytest.param(1, False, "2023: 120; 2024: 340", marks=ODS_STEP, id="header marked by the file"),
+    pytest.param(1, True, "2023: 120; 2024: 340", marks=ODS_STEP, id="header marked, data in a row group"),
+])
+def test_read_ods_header_rows(tmp_path, header_rows, group, expected):
+    f = tmp_path / "book.ods"
+    years = lambda *v: ods_row(*[ods_cell(x, valuetype="float", value=x) for x in v])  # noqa: E731
+    write_ods(f, [years("2023", "2024"), years("120", "340")], header_rows, group)
+
+    assert read_ods(f) == "# Sheet: Φύλλο\n" + expected
+
+
+# some programs put spaces and new lines between the tags of content.xml
+def test_read_ods_pretty_printed_xml(tmp_path):
+    plain = tmp_path / "plain.ods"
+    write_ods(plain, [names(), ods_row(S_("Μαρία"), S_("9"), S_("8"))])
+    pretty = tmp_path / "pretty.ods"
+    with zipfile.ZipFile(plain) as zin, zipfile.ZipFile(pretty, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "content.xml":
+                data = re.sub(rb">\s*<(?!/text:p)", b">\n   <", data)
+            zout.writestr(item, data)
+
+    assert read_ods(pretty) == read_ods(plain) == "# Sheet: Φύλλο\nΌνομα: Μαρία; Γραπτό: 9; Προφορικό: 8"
+
+
+# a text document renamed to .ods is not a spreadsheet
+def test_read_ods_refuses_a_text_document(tmp_path):
+    doc = OpenDocumentText()
+    doc.text.addElement(OdfP(text="κείμενο"))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    f = tmp_path / "text.ods"
+    doc.save(str(f))
+
+    with pytest.raises(ValueError):
+        read_ods(f)
 
 
 # old .xls file: dates and numbers come out like in xlsx
@@ -708,6 +869,10 @@ def test_read_xlsx_merges_from_the_xml(tmp_path, monkeypatch, chunk, prefix):
     assert read_xlsx(f) == "# Sheet: Sheet\n" + MERGE_SHAPES["across"][2]
 
 
+# merges in the empty area around a table
+OUTSIDE = pytest.mark.xfail(strict=True, reason="fill_merged crashes on a merge outside the rows")
+
+
 # the value of a merge goes into every cell it covers
 @pytest.mark.parametrize("rows, merges, expected", [
     ([("a", "b"), ("c", "d")], [], [["a", "b"], ["c", "d"]]),
@@ -716,8 +881,10 @@ def test_read_xlsx_merges_from_the_xml(tmp_path, monkeypatch, chunk, prefix):
     ([("a", "b"), (None, "c")], [(0, 0, 3, 0)], [["a", "b"], ["a", "c"]]),
     ([(54, None), (None, None)], [(0, 0, 1, 1)], [[54, 54], [54, 54]]),
     ([(None, None), ("x", None)], [(0, 0, 0, 1), (1, 0, 1, 1)], [[None, None], ["x", "x"]]),
+    pytest.param([("a",)], [(3, 0, 4, 1)], [["a"]], marks=OUTSIDE, id="merge below the table"),
+    pytest.param([("a",)], [(0, 2, 0, 3)], [["a"]], marks=OUTSIDE, id="merge right of a short row"),
 ], ids=["no merges", "across", "past the end of a short row", "past the last row", "raw value kept",
-        "empty merge"])
+        "empty merge"] + ["merge below the table", "merge right of a short row"])
 def test_fill_merged(rows, merges, expected):
     assert fill_merged(rows, merges) == expected
 

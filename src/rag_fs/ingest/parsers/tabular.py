@@ -1,7 +1,6 @@
 import datetime
 import openpyxl
 from pathlib import Path
-import pandas as pd
 from .text import read_text
 import csv
 import io
@@ -9,9 +8,12 @@ import xlrd
 import re
 import zipfile
 from openpyxl.worksheet.cell_range import CellRange
+from odf.opendocument import load
+from odf import teletype
 from ..file_scanner import MB
 
 HEADER_SEARCH_ROWS = 10 #the number of rows in which we search for a header
+ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
 
 def cell_to_str(value)->str:
     if value is None:
@@ -20,11 +22,18 @@ def cell_to_str(value)->str:
         return str(value.date())#this only keeps the date
     if isinstance(value,float) and value.is_integer():
         return str(int(value))
-    return str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " / ").strip()#a cell can have multiply lines of text now we indicate it with /
+    lines=[]
+    for line in str(value).replace("\r\n", "\n").replace("\r", "\n").split("\n"):#a cell can have many lines
+        line=line.strip()
+        if line:#empty lines are removed
+            lines.append(line)
+    return " / ".join(lines)#multiply lines of text we indicate it with /
 
 def fill_merged(rows, merges):
     filled=[list(row) for row in rows]#we make list from tuple to modify value
     for top,left,bottom,right in merges:
+        if top>=len(filled) or left>=len(filled[top]):
+            continue
         value=filled[top][left]#the value of the merge is in its top left cell
         last=min(bottom,len(filled)-1)#a merge cant go past the last row
         for r in range(top,last+1):
@@ -180,24 +189,91 @@ def read_xlsx(path: Path)->str:
     sheets=[]
     for sheet in book.worksheets:
         rows=fill_merged(list(sheet.iter_rows(values_only=True)),xlsx_merges(path,sheet))#we remove data like colour,font,etc. from each and we merge if needed
-        sheets.append((sheet.title,rows))
+        sheets.append((sheet.title,rows,0))
     book.close()
     return format_sheets(sheets)
 
 
 def format_sheets(sheets):#for multiple pages
     blocks=[]
-    for title,lines in sheets:
-        text=format_rows(lines)
+    for title,lines,header_rows in sheets:
+        text=format_rows(lines,header_rows)
         if text:
             blocks.append(f"# Sheet: {title}\n{text}")
     return "\n\n".join(blocks)
 
+def odf_row_list(node, rows: list, in_header: bool=False) -> list:
+    for child in node.childNodes:
+        if child.tagName=="table:table-row":
+            rows.append((child,in_header))
+        elif child.tagName in ODF_ROW_GROUPS:#rows can be inside groups
+            odf_row_list(child,rows,in_header or child.tagName=="table:table-header-rows")
+    return rows
+
+def odf_cell_value(cell):
+    kind=cell.getAttribute("valuetype")
+    value=cell.getAttribute("value")
+    date=cell.getAttribute("datevalue")
+    if kind in ("float","percentage","currency") and value is not None:#the real number, not how it is shown
+        return float(value)
+    if kind=="date" and date is not None:
+        return datetime.datetime.fromisoformat(date)
+    lines=[]
+    for p in cell.childNodes:#every paragraph of the cell is a line
+        if p.tagName in ("text:p","text:h"):
+            lines.append(teletype.extractText(p))
+    return "\n".join(lines)
+
+def odf_table_rows(table):
+    rows=[]
+    merges=[]
+    header_rows=0
+    blank_rows=0#empty rows we have not added yet
+    for row,in_header in odf_row_list(table,[]):
+        cells=[]
+        blank_cells=0#empty cells we have not added yet
+        for cell in row.childNodes:
+            if cell.tagName not in ("table:table-cell","table:covered-table-cell"):
+                continue
+            repeat=int(cell.getAttribute("numbercolumnsrepeated") or 1)
+            value=""
+            if cell.tagName=="table:table-cell":#a covered cell is an empty place inside a merge
+                value=odf_cell_value(cell)
+                down=int(cell.getAttribute("numberrowsspanned") or 1)
+                across=int(cell.getAttribute("numbercolumnsspanned") or 1)
+                if down>1 or across>1:
+                    top=len(rows)+blank_rows
+                    left=len(cells)+blank_cells
+                    merges.append((top,left,top+down-1,left+across-1))
+            if value=="":#we add empty cells only if a value comes after them
+                blank_cells+=repeat
+                continue
+            cells.extend([None]*blank_cells)
+            blank_cells=0
+            cells.extend([value]*repeat)
+        repeat=int(row.getAttribute("numberrowsrepeated") or 1)
+        if not cells:#same for empty rows, libreoffice writes a million of them at the end
+            blank_rows+=repeat
+            continue
+        for _ in range(blank_rows):
+            rows.append([])
+        blank_rows=0
+        for _ in range(repeat):
+            rows.append(list(cells))
+        if in_header:
+            header_rows+=repeat
+    return rows,merges,header_rows
+
 def read_ods(path: Path)->str:
-    tables=pd.read_excel(path,engine="odf",sheet_name=None,header=None,dtype=str,keep_default_na=False)
+    doc=load(str(path))
+    content=[node for node in doc.body.childNodes if node.tagName=="office:spreadsheet"]
+    if not content:#an odt or odp with the wrong extension
+        raise ValueError("Not an .ods spreadsheet")
     sheets=[]
-    for name,df in tables.items():
-        sheets.append((name,df.values.tolist()))
+    for table in content[0].childNodes:
+        if table.tagName=="table:table":
+            rows,merges,header_rows=odf_table_rows(table)
+            sheets.append((table.getAttribute("name"),fill_merged(rows,merges),header_rows))
     return format_sheets(sheets)
 
 def read_csv(path: Path)->str:#normal text with seperators
@@ -229,7 +305,7 @@ def read_xls(path: Path)->str:
         merges=[]
         for rlo,rhi,clo,chi in sheet.merged_cells:#different merge formatting
             merges.append((rlo,clo,rhi-1,chi-1))    
-        sheets.append((sheet.name,fill_merged(rows,merges)))
+        sheets.append((sheet.name,fill_merged(rows,merges),0))
     book.release_resources()
     return format_sheets(sheets)
 
