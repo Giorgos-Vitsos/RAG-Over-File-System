@@ -214,9 +214,9 @@ def odf_cell_value(cell):
     kind=cell.getAttribute("valuetype")
     value=cell.getAttribute("value")
     date=cell.getAttribute("datevalue")
-    if kind in ("float","percentage","currency") and value is not None:#the real number, not how it is shown
+    if kind in ("float","percentage","currency") and value is not None:#we return the real value not how it is shown
         return float(value)
-    if kind=="date" and date is not None:
+    if kind=="date" and date is not None:#we uniform the date
         return datetime.datetime.fromisoformat(date)
     lines=[]
     for p in cell.childNodes:#every paragraph of the cell is a line
@@ -235,33 +235,33 @@ def odf_table_rows(table):
         for cell in row.childNodes:
             if cell.tagName not in ("table:table-cell","table:covered-table-cell"):
                 continue
-            repeat=int(cell.getAttribute("numbercolumnsrepeated") or 1)
+            repeat=int(cell.getAttribute("numbercolumnsrepeated") or 1)#how many times the cell repeats in this row
             value=""
-            if cell.tagName=="table:table-cell":#a covered cell is an empty place inside a merge
+            if cell.tagName=="table:table-cell":#only normal cells have value
                 value=odf_cell_value(cell)
                 down=int(cell.getAttribute("numberrowsspanned") or 1)
                 across=int(cell.getAttribute("numbercolumnsspanned") or 1)
-                if down>1 or across>1:
+                if down>1 or across>1:#start of a merge
                     top=len(rows)+blank_rows
                     left=len(cells)+blank_cells
                     merges.append((top,left,top+down-1,left+across-1))
-            if value=="":#we add empty cells only if a value comes after them
+            if value=="":#if the merge is empty we might not need to add it we will find out later
                 blank_cells+=repeat
                 continue
-            cells.extend([None]*blank_cells)
+            cells.extend([None]*blank_cells)#if we have data then add all the empties before to keep the structure correct
             blank_cells=0
             cells.extend([value]*repeat)
         repeat=int(row.getAttribute("numberrowsrepeated") or 1)
-        if not cells:#same for empty rows, libreoffice writes a million of them at the end
+        if not cells:#if the row was empty we might not need to add it we will find out later
             blank_rows+=repeat
             continue
-        for _ in range(blank_rows):
+        for repeated_row in range(blank_rows):#if we have data we add the empty rows that repeat to keep the structure
             rows.append([])
         blank_rows=0
-        for _ in range(repeat):
+        for repeated_row in range(repeat):
             rows.append(list(cells))
         if in_header:
-            header_rows+=repeat
+            header_rows+=repeat#repeating rows are all headers
     return rows,merges,header_rows
 
 def read_ods(path: Path)->str:
@@ -308,4 +308,3 @@ def read_xls(path: Path)->str:
         sheets.append((sheet.name,fill_merged(rows,merges),0))
     book.release_resources()
     return format_sheets(sheets)
-
