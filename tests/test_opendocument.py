@@ -6,7 +6,7 @@ import zipfile
 import docx
 import pytest
 from odf.dc import Creator, Date as DcDate, Title as DcTitle
-from odf.draw import CustomShape, Frame, G, Image as DrawImage, TextBox
+from odf.draw import A as DrawA, CustomShape, Frame, G, Image as DrawImage, Object as DrawObject, TextBox
 from odf.namespaces import TEXTNS, XMLNS
 from odf.office import Annotation, AnnotationEnd, ChangeInfo
 from odf.opendocument import OpenDocumentSpreadsheet, OpenDocumentText
@@ -16,9 +16,10 @@ from odf.table import (
     CoveredTableCell, Table as OdfTable, TableCell, TableColumn, TableHeaderRows, TableRow, TableRowGroup,
 )
 from odf.text import (
-    A, Change, ChangedRegion, ChangeEnd, ChangeStart, Date as TextDate, Deletion, H, IndexBody, IndexTitle,
-    Insertion, LineBreak as OdfLineBreak, List, ListItem, Note, NoteBody, NoteCitation, P as OdfP, S as OdfS,
-    Section, Sequence, SoftPageBreak, Span, Tab, TableOfContent, TrackedChanges,
+    A, AlphabeticalIndex, Bibliography, Change, ChangedRegion, ChangeEnd, ChangeStart, Date as TextDate, Deletion, H,
+    IndexBody, IndexTitle, Insertion, LineBreak as OdfLineBreak, List, ListHeader, ListItem, Note, NoteBody,
+    NoteCitation, NumberedParagraph, P as OdfP, S as OdfS, Section, Sequence, SoftPageBreak, Span, Tab,
+    TableOfContent, TrackedChanges,
 )
 from PIL import Image
 
@@ -72,6 +73,16 @@ def commented_cell():
     return cell
 
 
+# a cell with a bullet list in it
+def list_cell(*items):
+    bullet_list = List()
+    for item in items:
+        list_item = ListItem()
+        list_item.addElement(OdfP(text=item))
+        bullet_list.addElement(list_item)
+    return ods_cell(bullet_list, valuetype="string")
+
+
 S_ = lambda text: ods_cell(text, valuetype="string")  # noqa: E731
 names = lambda: ods_row(S_("Όνομα"), S_("Γραπτό"), S_("Προφορικό"))  # noqa: E731
 ODS_CASES = {
@@ -122,6 +133,13 @@ ODS_CASES = {
     "a comment is not the cell text": ([
         ods_row(S_("Όνομα"), S_("Βαθμός")), ods_row(commented_cell(), S_("9")),
     ], "Όνομα: Μαρία; Βαθμός: 9"),
+    "spaces and new lines in the xml of a cell count as one space": ([
+        ods_row(S_("Όνομα"), S_("Επώνυμο")), ods_row(S_("Μαρία"), S_("Παπαδάκη\n      Λαμπράκη")),
+    ], "Όνομα: Μαρία; Επώνυμο: Παπαδάκη Λαμπράκη"),
+    "list in a cell": ([
+        ods_row(S_("Όνομα"), S_("Μαθήματα")),
+        ods_row(S_("Μαρία"), list_cell("ΗΥ100", "ΗΥ120")),
+    ], "Όνομα: Μαρία; Μαθήματα: ΗΥ100 / ΗΥ120"),
 }
 
 
@@ -247,6 +265,15 @@ def image(title=None, desc=None):
 # a frame with a text box, like insert > text box in writer
 def textbox(*paragraphs, anchortype="paragraph"):
     return inside(Frame(width="5cm", height="2cm", anchortype=anchortype), inside(TextBox(), *paragraphs))
+
+
+# a chart (an object in another file of the zip); libreoffice also saves a picture of it to show
+def chart(replacement_title=None):
+    frame = inside(Frame(width="5cm", height="3cm", anchortype="paragraph"), DrawObject(href="./Object 1"))
+    if replacement_title is not None:
+        frame.addElement(DrawImage(href="./ObjectReplacements/Object 1"))
+        frame.addElement(SvgTitle(text=replacement_title))
+    return frame
 
 
 # a writer table; a value is a string (one paragraph) or a list of elements for the cell
@@ -437,6 +464,39 @@ ODT_CASES = {
         lambda: [table([["Όνομα", "Σημειώσεις"], ["Μαρία", [bullets("α", "β")]]])],
         "Όνομα: Μαρία; Σημειώσεις: α / β"),
     "empty table": (lambda: [table([["", ""], ["", ""]]), para("Κείμενο")], "Κείμενο"),
+    "image in a table cell": (
+        lambda: [table([["Όνομα", "Φωτογραφία"], ["Μαρία", [para(image(desc="Πορτρέτο"))]]])],
+        "Όνομα: Μαρία; Φωτογραφία: [Image: Πορτρέτο]"),
+    # a cell value is not a heading, the # marks belong only to blocks
+    "heading in a table cell has no #": (
+        lambda: [table([["Όνομα", "Ενότητα"], ["Μαρία", [heading(2, "Τίτλος")]]])],
+        "Όνομα: Μαρία; Ενότητα: Τίτλος"),
+
+    # more structure
+    "heading level 0 is level 1": (lambda: [heading(0, "Μηδέν")], "# Μηδέν"),
+    "list header is read like a list item": (
+        lambda: [inside(List(), inside(ListHeader(), OdfP(text="Κεφαλίδα λίστας")),
+                        inside(ListItem(), OdfP(text="Πρώτο")))],
+        "Κεφαλίδα λίστας\n\nΠρώτο"),
+    "numbered paragraph outside a list": (
+        lambda: [inside(NumberedParagraph(listid="L1"), OdfP(text="Αριθμημένη"))], "Αριθμημένη"),
+    "alphabetical index is skipped": (
+        lambda: [inside(AlphabeticalIndex(name="Ευρετήριο1"), inside(IndexBody(), OdfP(text="λέξη, 3"))),
+                 para("Κείμενο")],
+        "Κείμενο"),
+    # unlike the other indexes, the bibliography is the only place the full references are written
+    "bibliography is kept": (
+        lambda: [inside(Bibliography(name="Βιβλιογραφία1"), inside(IndexBody(), OdfP(text="[1] Παπαδάκης, 2020"))),
+                 para("Κείμενο")],
+        "[1] Παπαδάκης, 2020\n\nΚείμενο"),
+
+    # objects and links around images
+    "chart is skipped": (lambda: [para("Πριν"), para(chart()), para("Μετά")], "Πριν\n\nΜετά"),
+    "chart alt text is kept like an image": (
+        lambda: [para(chart(replacement_title="Εγγραφές ανά έτος"))], "[Image: Εγγραφές ανά έτος]"),
+    "image inside a link": (
+        lambda: [para("Δες ", inside(DrawA(href="https://www.uoc.gr", type="simple"), image(desc="Λογότυπο")))],
+        "[Image: Λογότυπο]\n\nΔες"),
 }
 
 

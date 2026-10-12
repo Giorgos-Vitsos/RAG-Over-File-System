@@ -7,7 +7,7 @@ from odf.style import Style
 from .tabular import fill_merged, format_rows, format_sheets
 
 ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
-ODF_SPACES=re.compile(r"[ \t\r\n]+")#in odf many spaces or new lines in the xml count as one space (not \s, it would also eat the non-breaking space)
+ODF_SPACES=re.compile(r"[ \t\r\n]+")
 ODF_SKIP={
     "office:annotation","office:annotation-end",
     "text:note",
@@ -50,13 +50,13 @@ def find_title_styles(file:OpenDocument)->set[str]:
             current=parents.get(current)
     return titles
 
-def read_blocks(node,titles:set[str])->list[str]:
+def read_blocks(node,titles:set[str] | None)->list[str]:
     blocks=[]
     for child in node.childNodes:
         blocks.extend(gather_data(child,titles))
     return blocks
 
-def gather_data(node,titles:set[str])->list[str]:
+def gather_data(node,titles:set[str] | None)->list[str]:
     tag=node.tagName
     if tag=="Text" or tag in ODF_SKIP:#text between blocks is only noise
         return []
@@ -69,10 +69,11 @@ def gather_data(node,titles:set[str])->list[str]:
         if not text:#if no other text we return only the alt
             return blocks
         level=0
-        if tag=="text:h":
-            level=max(1,int(node.getAttribute("outlinelevel") or 1))#the heading level is always 1+
-        elif node.getAttribute("stylename") in titles:
-            level=1
+        if titles is not None:
+            if tag=="text:h":
+                level=max(1,int(node.getAttribute("outlinelevel") or 1))#the heading level is always 1+
+            elif node.getAttribute("stylename") in titles:
+                level=1
         if level>0:
             text="#"*level+" "+text
         blocks.append(text)
@@ -141,7 +142,7 @@ def odf_cell_value(cell):
         return float(value)
     if kind=="date" and date is not None:#we uniform the date
         return datetime.datetime.fromisoformat(date)
-    return "\n".join(read_blocks(cell,set()))
+    return "\n".join(read_blocks(cell,None))
 
 def odf_table_rows(table):
     rows=[]
