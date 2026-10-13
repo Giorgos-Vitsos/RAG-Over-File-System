@@ -1,5 +1,6 @@
 import datetime
 import io
+import itertools
 import re
 import zipfile
 
@@ -423,6 +424,10 @@ ODT_CASES = {
     "image alt text from the title": (lambda: [para(image(title="Χάρτης"))], "[Image: Χάρτης]"),
     "image alt text from the description": (lambda: [para(image(desc="Χάρτης"))], "[Image: Χάρτης]"),
     "image without alt text": (lambda: [para(image()), para("Κείμενο")], "Κείμενο"),
+    "image with a title and a description uses the description": (
+        lambda: [para(image(title="Χάρτης", desc="Χάρτης της Κρήτης"))], "[Image: Χάρτης της Κρήτης]"),
+    "a text box with a name is not an image": (
+        lambda: [para(inside(textbox(para("Σημείωση")), SvgTitle(text="Πλαίσιο1")))], "Σημείωση"),
     "image with only spaces as alt text": (lambda: [para(image(title="  ", desc="  ")), para("Κείμενο")],
                                            "Κείμενο"),
     # like docx, the image comes before the text of its paragraph
@@ -534,6 +539,76 @@ def test_read_odt_title_style(tmp_path, style, styles, auto_styles, expected):
                   styles=styles, auto_styles=auto_styles)
 
     assert read_odf(f) == expected + "\n\nΚείμενο"
+
+
+# a heading style can say its level with default-outline-level, with its name (Heading_20_N), or both
+HEADING_STYLES = {
+    "level": lambda n: Style(name=f"Κεφάλαιο_20_{n}", displayname=f"Κεφάλαιο {n}", family="paragraph",
+                             defaultoutlinelevel=str(n)),
+    "name": lambda n: Style(name=f"Heading_20_{n}", displayname=f"Heading {n}", family="paragraph"),
+    "level and name": lambda n: Style(name=f"Heading_20_{n}", displayname=f"Heading {n}", family="paragraph",
+                                      defaultoutlinelevel=str(n)),
+}
+
+
+# google docs writes headings as text:p with an automatic style based on the heading style, not as text:h
+@pytest.mark.parametrize("kind, automatic, level", [
+    pytest.param(kind, automatic, level, id=f"{kind}, {'automatic style' if automatic else 'the style itself'}, {level}")
+    for kind, automatic, level in itertools.product(HEADING_STYLES, [False, True], [1, 3])
+])
+def test_read_odt_heading_style(tmp_path, kind, automatic, level):
+    style = HEADING_STYLES[kind](level)
+    name = style.getAttribute("name")
+    auto_styles = [Style(name="P64", family="paragraph", parentstylename=name)] if automatic else []
+    f = write_odt(tmp_path / "doc.odt", para("Μέθοδος", stylename="P64" if automatic else name), para("Κείμενο"),
+                  styles=[style], auto_styles=auto_styles)
+
+    assert read_odf(f) == "#" * level + " Μέθοδος\n\nΚείμενο"
+
+
+# which level wins when a style says more than one thing
+@pytest.mark.parametrize("element, styles, expected", [
+    pytest.param(lambda: para("Μέθοδος", stylename="Heading"), lambda: [Style(name="Heading", family="paragraph")],
+                 "Μέθοδος", id="Heading without a number is text"),
+    pytest.param(lambda: para("Μέθοδος", stylename="Heading_20_2_20_old"),
+                 lambda: [Style(name="Heading_20_2_20_old", family="paragraph")], "Μέθοδος",
+                 id="a name only partly like a heading is text"),
+    pytest.param(lambda: para("Μέθοδος", stylename="Heading_20_2"),
+                 lambda: [Style(name="Heading_20_2", family="paragraph", defaultoutlinelevel="3")], "### Μέθοδος",
+                 id="the written level wins over the name"),
+    pytest.param(lambda: para("Μέθοδος", stylename="Κεφάλαιο"),
+                 lambda: [HEADING_STYLES["level and name"](2),
+                          Style(name="Κεφάλαιο", family="paragraph", parentstylename="Heading_20_2",
+                                defaultoutlinelevel="3")],
+                 "### Μέθοδος", id="the level of a style wins over its parent's"),
+    pytest.param(lambda: para("Μέθοδος", cls=H, outlinelevel=3, stylename="Heading_20_2"),
+                 lambda: [HEADING_STYLES["level and name"](2)], "### Μέθοδος",
+                 id="the level of text:h wins over its style"),
+    pytest.param(lambda: table([["Όνομα", "Ενότητα"], ["Μαρία", [para("Μέθοδος", stylename="Heading_20_2")]]]),
+                 lambda: [HEADING_STYLES["level and name"](2)], "Όνομα: Μαρία; Ενότητα: Μέθοδος",
+                 id="heading style in a table cell has no #"),
+])
+def test_read_odt_heading_style_priority(tmp_path, element, styles, expected):
+    assert read_odf(write_odt(tmp_path / "doc.odt", element(), styles=styles())) == expected
+
+
+# a name is unique only inside its family: a text style based on Title with the name of a paragraph style
+# (odfpy renames such a style when it saves, so the name is changed in the xml afterwards)
+def test_read_odt_text_style_does_not_make_a_title(tmp_path):
+    plain = write_odt(tmp_path / "plain.odt", para(Span(stylename="T", text="Μέθοδος"), stylename="P64"),
+                      styles=[Style(name="Title", family="paragraph"), Style(name="Κεφάλαιο", family="paragraph")],
+                      auto_styles=[Style(name="P64", family="paragraph", parentstylename="Κεφάλαιο"),
+                                   Style(name="T", family="text", parentstylename="Title")])
+    f = tmp_path / "doc.odt"
+    with zipfile.ZipFile(plain) as zin, zipfile.ZipFile(f, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "content.xml":
+                assert b'style:name="T"' in data
+                data = data.replace(b'"T"', '"Κεφάλαιο"'.encode())
+            zout.writestr(item, data)
+
+    assert read_odf(f) == "Μέθοδος"
 
 
 # page header, footer and document properties are not body text

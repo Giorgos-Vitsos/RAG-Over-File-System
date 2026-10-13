@@ -7,6 +7,7 @@ from odf.style import Style
 from .tabular import fill_merged, format_rows, format_sheets
 
 ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
+HEADING_NAME=re.compile(r"Heading_20_(\d+)")
 ODF_SPACES=re.compile(r"[ \t\r\n]+")
 ODF_SKIP={
     "office:annotation","office:annotation-end",
@@ -28,35 +29,47 @@ def read_odf(path: Path)->str:
     raise ValueError("Not an ODF text document or presentation")
 
 def read_odt(file:OpenDocument,text)->str:
-    return "\n\n".join(read_blocks(text,find_title_styles(file)))
+    return "\n\n".join(read_blocks(text,find_heading_styles(file)))
 
 def read_odp(file:OpenDocument,presentation)->str:
     raise NotImplementedError("presentations are not read yet")
 
-def find_title_styles(file:OpenDocument)->set[str]:
+def find_heading_styles(file:OpenDocument)->dict[str,int]:
     parents={}
+    levels={}#the styles that say their level themselves
     for styles in (file.styles,file.automaticstyles):#all type of styles
         for style in styles.getElementsByType(Style):
-            parents[style.getAttribute("name")]=style.getAttribute("parentstylename")#we save its parent or None
-    titles=set()
+            if style.getAttribute("family")!="paragraph":#a name is unique only inside its family
+                continue
+            name=style.getAttribute("name")
+            parents[name]=style.getAttribute("parentstylename")#we save its parent or None
+            level=style.getAttribute("defaultoutlinelevel")
+            match=HEADING_NAME.fullmatch(name)
+            if name=="Title":
+                levels[name]=1
+            elif level:
+                levels[name]=int(level)
+            elif match:
+                levels[name]=int(match.group(1))
+    headings={}
     for name in parents:
         current=name
         seen=set()#saves us from infinite loops
-        while current and current not in seen:#we go up the parents until we find Title or reach the top
-            if current=="Title":
-                titles.add(name)
+        while current and current not in seen:#we go up the parents until a style with a level
+            if current in levels:
+                headings[name]=levels[current]
                 break
             seen.add(current)
             current=parents.get(current)
-    return titles
+    return headings
 
-def read_blocks(node,titles:set[str] | None)->list[str]:
+def read_blocks(node,headings:dict[str,int] | None)->list[str]:
     blocks=[]
     for child in node.childNodes:
-        blocks.extend(gather_data(child,titles))
+        blocks.extend(gather_data(child,headings))
     return blocks
 
-def gather_data(node,titles:set[str] | None)->list[str]:
+def gather_data(node,headings:dict[str,int] | None)->list[str]:
     tag=node.tagName
     if tag=="Text" or tag in ODF_SKIP:#text between blocks is only noise
         return []
@@ -65,15 +78,15 @@ def gather_data(node,titles:set[str] | None)->list[str]:
         shapes=[]#alt data like images
         text=get_paragraph_text(node,shapes)
         for shape in shapes:
-            blocks.extend(gather_data(shape,titles))
+            blocks.extend(gather_data(shape,headings))
         if not text:#if no other text we return only the alt
             return blocks
         level=0
-        if titles is not None:
+        if headings is not None:
             if tag=="text:h":
                 level=max(1,int(node.getAttribute("outlinelevel") or 1))#the heading level is always 1+
-            elif node.getAttribute("stylename") in titles:
-                level=1
+            else:
+                level=headings.get(node.getAttribute("stylename"),0)
         if level>0:
             text="#"*level+" "+text
         blocks.append(text)
@@ -88,7 +101,7 @@ def gather_data(node,titles:set[str] | None)->list[str]:
         alt=odf_image_alt(node)
         if alt:
             blocks.append(f"[Image: {alt}]")
-    blocks.extend(read_blocks(node,titles))#group blocks
+    blocks.extend(read_blocks(node,headings))#group blocks
     return blocks
 
 def get_paragraph_text(node,shapes:list)->str:
