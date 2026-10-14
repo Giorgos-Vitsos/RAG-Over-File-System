@@ -19,6 +19,10 @@ ODF_SKIP={
     "draw:object","draw:object-ole"
 }
 
+def is_skipped(tag:str)->bool:
+    return tag in ODF_SKIP or tag.endswith(":annotation")
+
+
 def read_odf(path: Path)->str:
     file=load(str(path))
     for node in file.body.childNodes:
@@ -30,9 +34,6 @@ def read_odf(path: Path)->str:
 
 def read_odt(file:OpenDocument,text)->str:
     return "\n\n".join(read_blocks(text,find_heading_styles(file)))
-
-def read_odp(file:OpenDocument,presentation)->str:
-    raise NotImplementedError("presentations are not read yet")
 
 def find_heading_styles(file:OpenDocument)->dict[str,int]:
     parents={}
@@ -71,7 +72,7 @@ def read_blocks(node,headings:dict[str,int] | None)->list[str]:
 
 def gather_data(node,headings:dict[str,int] | None)->list[str]:
     tag=node.tagName
-    if tag=="Text" or tag in ODF_SKIP:#text between blocks is only noise
+    if tag=="Text" or is_skipped(tag):#text between blocks is only noise
         return []
     blocks=[]
     if tag in ("text:p","text:h"):
@@ -126,7 +127,7 @@ def odf_inline(node,shapes:list)->str:
             parts.append("\n")
         elif tag.startswith("draw:"):
             shapes.append(child)
-        elif tag not in ODF_SKIP:#wrappers are parsed recursivily
+        elif not is_skipped(tag):#wrappers are parsed recursivily
             parts.append(odf_inline(child,shapes))
     return "".join(parts)
 
@@ -208,3 +209,6 @@ def read_ods(path: Path)->str:
             rows,merges,header_rows=odf_table_rows(table)
             sheets.append((table.getAttribute("name"),fill_merged(rows,merges),header_rows))
     return format_sheets(sheets)
+
+def read_odp(file:OpenDocument,presentation)->str:
+    raise NotImplementedError("presentations are not read yet")

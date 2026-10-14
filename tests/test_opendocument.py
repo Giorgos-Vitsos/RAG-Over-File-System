@@ -7,11 +7,14 @@ import zipfile
 import docx
 import pytest
 from odf.dc import Creator, Date as DcDate, Title as DcTitle
-from odf.draw import A as DrawA, CustomShape, Frame, G, Image as DrawImage, Object as DrawObject, TextBox
+from odf.draw import (
+    A as DrawA, CustomShape, Frame, G, Image as DrawImage, Object as DrawObject, Page, PageThumbnail, TextBox,
+)
 from odf.namespaces import TEXTNS, XMLNS
 from odf.office import Annotation, AnnotationEnd, ChangeInfo
-from odf.opendocument import OpenDocumentSpreadsheet, OpenDocumentText
-from odf.style import Footer, Header, MasterPage, PageLayout, Style
+from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
+from odf.presentation import FooterDecl, Notes
+from odf.style import DrawingPageProperties, Footer, Header, MasterPage, PageLayout, Style
 from odf.svg import Desc, Title as SvgTitle
 from odf.table import (
     CoveredTableCell, Table as OdfTable, TableCell, TableColumn, TableHeaderRows, TableRow, TableRowGroup,
@@ -26,7 +29,7 @@ from PIL import Image
 
 from rag_fs.ingest.parsers import PARSERS
 from rag_fs.ingest.parsers.opendocument import read_odf, read_ods
-from test_parsers import EXPECTED_DOCX, EXPECTED_TWO_SHEETS, INCOME, built, make_ods, parse_one
+from test_parsers import EXPECTED_DOCX, EXPECTED_PPTX, EXPECTED_TWO_SHEETS, INCOME, built, make_ods, parse_one
 
 
 # ---------------- .ods ----------------
@@ -710,3 +713,182 @@ def test_parse_file_odt_without_text_is_empty(tmp_path):
     data = built(tmp_path, "base.odt", lambda f: write_odt(f, para(), para("   "), para(image())))
 
     assert parse_one(tmp_path, "doc.odt", data).parse_status == "empty"
+
+
+# ---------------- .odp ----------------
+
+ODP = pytest.mark.xfail(strict=True, reason="step C: presentations are not read yet")
+
+
+# a frame with a text box on a slide; cls is the presentation class (title, outline, subtitle, notes)
+def slide_box(*paragraphs, cls=None):
+    frame = Frame(**{"class": cls}) if cls else Frame()
+    return inside(frame, inside(TextBox(), *[OdfP(text=p) if isinstance(p, str) else p for p in paragraphs]))
+
+
+def speaker_notes(*paragraphs):
+    return inside(Notes(), PageThumbnail(pagenumber=1), slide_box(*paragraphs, cls="notes"))
+
+
+# writes a presentation; every page is a list of shapes, hidden holds the numbers of the hidden pages
+def write_odp(path, *pages, hidden=(), master_text=None, footer=None, mimetype=None):
+    doc = OpenDocumentPresentation()
+    if mimetype:
+        doc.mimetype = mimetype
+    doc.addPicture(PICTURE, "image/png", PNG)
+    layout = PageLayout(name="PL")
+    doc.automaticstyles.addElement(layout)
+    master = MasterPage(name="Default", pagelayoutname=layout)
+    if master_text:
+        master.addElement(slide_box(master_text, cls="title"))
+    doc.masterstyles.addElement(master)
+    hidden_style = inside(Style(name="dp1", family="drawing-page"), DrawingPageProperties(visibility="hidden"))
+    doc.automaticstyles.addElement(hidden_style)
+    if footer:
+        doc.presentation.addElement(FooterDecl(name="ftr1", text=footer))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    for number, shapes in enumerate(pages, start=1):
+        page = Page(masterpagename=master, stylename=hidden_style) if number in hidden else Page(masterpagename=master)
+        doc.presentation.addElement(inside(page, *shapes))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(path))
+    return path
+
+
+# the same presentation as make_pptx in test_parsers.py, written by impress
+def make_odp(path, mimetype=None):
+    return write_odp(
+        path,
+        [slide_box("  Εισαγωγή ", cls="title"), slide_box(bullets("Πρώτη κουκκίδα", "Δεύτερη κουκκίδα"), cls="outline"),
+         slide_box(), speaker_notes("να πω για το dataset")],
+        [inside(Frame(), table([["Όνομα", "Βαθμός"], ["Μαρία", "9"]])), image(desc="Διάγραμμα"), image(desc=""),
+         inside(G(), slide_box("Κείμενο μέσα σε ομάδα"), inside(G(), slide_box("Ομάδα μέσα σε ομάδα")))],
+        [slide_box(cls="title"), speaker_notes("   ")],
+        mimetype=mimetype,
+    )
+
+
+# the same content gives the same text in odp and in pptx
+@ODP
+def test_read_odp_gives_the_same_text_as_pptx(tmp_path):
+    assert read_odf(make_odp(tmp_path / "talk.odp")) == EXPECTED_PPTX
+
+
+# one slide: (shapes, the text after "# Slide 1")
+ODP_CASES = {
+    "no title": ([slide_box("κείμενο")], "\n\nκείμενο"),
+    "title with a line break": ([slide_box(para("Γραμμή 1", OdfLineBreak(), "Γραμμή 2"), cls="title")],
+                                ": Γραμμή 1 Γραμμή 2"),
+    "title in two paragraphs": ([slide_box("Γραμμή 1", "  ", "Γραμμή 2", cls="title")], ": Γραμμή 1 Γραμμή 2"),
+    "title after other shapes": ([slide_box("κείμενο"), slide_box("Τίτλος", cls="title")], ": Τίτλος\n\nκείμενο"),
+    "only the first title is the title": ([slide_box("Α", cls="title"), slide_box("Β", cls="title")], ": Α\n\nΒ"),
+    "subtitle is slide text": ([slide_box("Τίτλος", cls="title"), slide_box("υπότιτλος", cls="subtitle")],
+                               ": Τίτλος\n\nυπότιτλος"),
+    "paragraphs and a line break in one box": ([slide_box("α", para("β", OdfLineBreak(), "γ"))], "\n\nα\nβ\nγ"),
+    "empty paragraphs in a box": ([slide_box("α", "", "   ", "β")], "\n\nα\nβ"),
+    "list inside a list": ([slide_box(bullets("α", bullets("β", "γ")))], "\n\nα\nβ\nγ"),
+    "a heading in a box is not a heading": ([slide_box(heading(1, "Ενότητα"))], "\n\nΕνότητα"),
+    "text directly in a shape": ([inside(CustomShape(), OdfP(text="κείμενο σε σχήμα"))], "\n\nκείμενο σε σχήμα"),
+    "two shapes are two blocks": ([slide_box("α"), slide_box("β")], "\n\nα\n\nβ"),
+    "image with a title only": ([image(title="Λογότυπο")], "\n\n[Image: Λογότυπο]"),
+    "image without alt text": ([image()], ""),
+    "chart": ([chart()], ""),
+    "notes in two paragraphs and a line break": (
+        [slide_box("Τίτλος", cls="title"), speaker_notes("α", para("β", OdfLineBreak(), "γ"))],
+        ": Τίτλος\n\nNotes: α\nβ\nγ"),
+    "notes only with spaces": ([slide_box("Τίτλος", cls="title"), speaker_notes("  ", "")], ": Τίτλος"),
+}
+
+
+# every kind of shape on one slide
+@ODP
+@pytest.mark.parametrize("shapes, expected", ODP_CASES.values(), ids=ODP_CASES.keys())
+def test_read_odp(tmp_path, shapes, expected):
+    assert read_odf(write_odp(tmp_path / "talk.odp", shapes)) == "# Slide 1" + expected
+
+
+# a comment on a slide is not text; older libreoffice writes it with another prefix (odfpy can only write the new one)
+@ODP
+@pytest.mark.parametrize("comment_xml", [
+    "<office:annotation><dc:creator>M</dc:creator><text:p>σχόλιο</text:p></office:annotation>",
+    '<officeooo:annotation xmlns:officeooo="http://openoffice.org/2009/office"><dc:creator>M</dc:creator>'
+    "<text:p>σχόλιο</text:p></officeooo:annotation>",
+], ids=["office", "officeooo"])
+def test_read_odp_slide_comment_is_not_text(tmp_path, comment_xml):
+    plain = write_odp(tmp_path / "plain.odp", [slide_box("κείμενο")])
+    f = tmp_path / "comment.odp"
+    with zipfile.ZipFile(plain) as zin, zipfile.ZipFile(f, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "content.xml":
+                data = data.replace(b"</draw:page>", comment_xml.encode() + b"</draw:page>")
+            zout.writestr(item, data)
+
+    assert read_odf(f) == "# Slide 1\n\nκείμενο"
+
+
+# slides are numbered in order, empty and hidden ones too
+@ODP
+def test_read_odp_counts_every_slide(tmp_path):
+    f = write_odp(tmp_path / "talk.odp", [slide_box("Α", cls="title")], [], [slide_box("Γ", cls="title")], hidden=(3,))
+
+    assert read_odf(f) == "# Slide 1: Α\n\n# Slide 2\n\n# Slide 3: Γ"
+
+
+# the master page, the page picture of the notes and the footer are not slide text
+@ODP
+def test_read_odp_master_and_footer_are_not_text(tmp_path):
+    f = write_odp(tmp_path / "talk.odp", [slide_box("κείμενο")], master_text="Όνομα μαθήματος", footer="Σελίδα")
+
+    assert read_odf(f) == "# Slide 1\n\nκείμενο"
+
+
+# some programs put spaces and new lines between the tags of content.xml
+@ODP
+def test_read_odp_pretty_printed_xml(tmp_path):
+    plain = make_odp(tmp_path / "plain.odp")
+    pretty = tmp_path / "pretty.odp"
+    with zipfile.ZipFile(plain) as zin, zipfile.ZipFile(pretty, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "content.xml":
+                data = re.sub(rb">\s*<(?!/text:[ph]>)", b">\n   <", data)
+            zout.writestr(item, data)
+
+    assert read_odf(pretty) == EXPECTED_PPTX
+
+
+# a presentation without slides gives empty text
+@ODP
+def test_read_odp_without_slides(tmp_path):
+    assert read_odf(write_odp(tmp_path / "empty.odp")) == ""
+
+
+# odp and its template point to read_odf
+@ODP
+@pytest.mark.parametrize("ext", [".odp", ".otp"])
+def test_odp_extensions_are_registered(ext):
+    assert PARSERS.get(ext) is read_odf
+
+
+# odp, its template, an upper case name, and an odp saved as .odt through parse_file
+@ODP
+@pytest.mark.parametrize("name, mimetype", [
+    ("talk.odp", None),
+    ("template.otp", "application/vnd.oasis.opendocument.presentation-template"),
+    ("TALK.ODP", None),
+    ("talk.odt", None),
+])
+def test_parse_file_reads_odp(tmp_path, name, mimetype):
+    doc = parse_one(tmp_path, name, built(tmp_path, "base.odp", lambda f: make_odp(f, mimetype)))
+
+    assert doc.parse_status == "ok"
+    assert doc.content_type == "prose"
+    assert doc.raw_text == EXPECTED_PPTX
+
+
+# a broken odp is failed, not a crash
+@ODP
+def test_parse_file_marks_a_broken_odp_as_failed(tmp_path):
+    doc = parse_one(tmp_path, "broken.odp", b"this is not a zip file")
+
+    assert doc.parse_status == "failed"
+    assert doc.content_type == "prose"

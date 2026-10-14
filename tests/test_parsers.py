@@ -13,7 +13,8 @@ import pptx
 import pytest
 from docx.oxml import parse_xml
 from docx.shared import Inches
-from odf.opendocument import OpenDocumentSpreadsheet, OpenDocumentText
+from odf.draw import Frame, Page
+from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
 from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableRow
 from odf.text import P as OdfP
 from PIL import Image
@@ -673,8 +674,25 @@ def merged_xls(shape, f):
     return sheets[shape]
 
 
-MERGE_FORMATS = {"docx": merged_docx, "pptx": merged_pptx, "xlsx": merged_xlsx, "xls": merged_xls, "ods": merged_ods, "odt": merged_odt}
-@pytest.mark.parametrize("fmt, shape", [pytest.param(fmt, shape, id=f"{fmt}, {shape}")
+# the same table on a slide of an impress presentation
+def merged_odp(shape, f):
+    doc = OpenDocumentPresentation()
+    frame = Frame()
+    frame.addElement(merged_odf_table(shape))
+    page = Page(masterpagename="Default")
+    page.addElement(frame)
+    doc.presentation.addElement(page)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(f))
+    return read_odf(f).removeprefix("# Slide 1\n\n")
+
+
+MERGE_FORMATS = {"docx": merged_docx, "pptx": merged_pptx, "xlsx": merged_xlsx, "xls": merged_xls, "ods": merged_ods,
+                 "odt": merged_odt, "odp": merged_odp}
+ODP_STEP = pytest.mark.xfail(strict=True, reason="step C: presentations are not read yet")
+
+
+@pytest.mark.parametrize("fmt, shape", [pytest.param(fmt, shape, marks=[ODP_STEP] if fmt == "odp" else [],
+                                                     id=f"{fmt}, {shape}")
                                         for fmt, shape in itertools.product(MERGE_FORMATS, MERGE_SHAPES)])
 def test_merged_cells(tmp_path, fmt, shape):
     assert MERGE_FORMATS[fmt](shape, tmp_path / f"merged.{fmt}") == MERGE_SHAPES[shape][2]
@@ -1118,6 +1136,43 @@ def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
 ])
 def test_read_docx_text_inside_other_elements(tmp_path, first, xml_parts, last, inside, expected):
     assert read_docx(docx_with_xml(tmp_path, first, xml_parts, last, inside)) == expected
+
+
+# a line break (shift+enter) is a new line, and a slide title is always one line
+@pytest.mark.xfail(strict=True, reason="step C: pptx gives \\x0b for a line break")
+def test_read_pptx_line_breaks(tmp_path):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_TITLE_ONLY])
+    title = slide.shapes.title
+    assert title is not None
+    title.text = "Γραμμή 1"
+    title.text_frame.paragraphs[0].add_line_break()
+    title.text_frame.paragraphs[0].add_run().text = "Γραμμή 2"
+    title.text_frame.add_paragraph().text = "  "
+    title.text_frame.add_paragraph().text = "Γραμμή 3"
+    for frame in (slide.shapes.add_textbox(PptxInches(1), PptxInches(3), PptxInches(3), PptxInches(1)).text_frame,
+                  slide.notes_slide.notes_text_frame):
+        assert frame is not None
+        frame.text = "α"
+        frame.paragraphs[0].add_line_break()
+        frame.paragraphs[0].add_run().text = "β"
+    f = tmp_path / "breaks.pptx"
+    p.save(str(f))
+
+    assert read_pptx(f) == "# Slide 1: Γραμμή 1 Γραμμή 2 Γραμμή 3\n\nα\nβ\n\nNotes: α\nβ"
+
+
+# a hidden slide is read like the others
+def test_read_pptx_hidden_slide(tmp_path):
+    p = pptx.Presentation()
+    for text in ("Α", "Β"):
+        p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK]).shapes.add_textbox(
+            PptxInches(1), PptxInches(1), PptxInches(3), PptxInches(1)).text_frame.text = text
+    p.slides[1]._element.set("show", "0")
+    f = tmp_path / "hidden.pptx"
+    p.save(str(f))
+
+    assert read_pptx(f) == "# Slide 1\n\nΑ\n\n# Slide 2\n\nΒ"
 
 
 # the title of a chart should be in the text
