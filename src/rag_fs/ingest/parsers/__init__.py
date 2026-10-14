@@ -41,7 +41,9 @@ PARSERS={
     ".ppsm": read_slide_variants,
     ".rtf": read_rtf,
     ".odt": read_odf,
-    ".ott": read_odf
+    ".ott": read_odf,
+    ".odp": read_odf,
+    ".otp": read_odf
 }
 
 for ext in CODE_EXT:

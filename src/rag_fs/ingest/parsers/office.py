@@ -106,18 +106,23 @@ def pptx_to_text(ppt: PptxPresentation)->str:
             block.extend(format_shape(shape))
         header=f"# Slide {i+1}"
         if title is not None:#we build the header with the title if it exists
-            title_txt=title.text_frame.text.strip()
-            if title_txt:
-                header=header+f": {title_txt}"  
+            title_lines=[]
+            for line in title.text_frame.text.replace("\x0b","\n").split("\n"):#title with multiple lines turns to single line
+                title_txt=line.strip()
+                if title_txt:
+                    title_lines.append(title_txt)
+            if title_lines:
+                header=header+": "+" ".join(title_lines)        
         output.append(header)
         output.extend(block)
         if slide.has_notes_slide:#we add notes if they exist
             notes=slide.notes_slide.notes_text_frame
             if notes is not None:
-                notes_txt=notes.text.strip()
+                notes_txt=notes.text.strip().replace("\x0b","\n")
                 if notes_txt:
                     output.append(f"Notes: {notes_txt}")     
     return "\n\n".join(output)
+
 
 def read_pptx(path: Path)->str:
     ppt=pptx.Presentation(str(path))
@@ -129,7 +134,7 @@ def format_shape(shape:BaseShape)->list[str]:
         for sub_shape in shape.shapes:
             output.extend(format_shape(sub_shape))
     elif isinstance(shape, Shape):
-        text=shape.text_frame.text.strip()
+        text=shape.text_frame.text.strip().replace("\x0b","\n")
         if text:
             output.append(text)
     elif isinstance(shape,GraphicFrame):
@@ -145,7 +150,7 @@ def format_shape(shape:BaseShape)->list[str]:
             for row in table.rows:
                 cells=[]
                 for cell in row.cells:
-                    cells.append(cell.text)
+                    cells.append(cell.text.replace("\x0b","\n"))
                 rows.append(cells)
             text=format_rows(fill_merged(rows,merges)).strip()
             if text:

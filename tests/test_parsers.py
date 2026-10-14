@@ -688,11 +688,9 @@ def merged_odp(shape, f):
 
 MERGE_FORMATS = {"docx": merged_docx, "pptx": merged_pptx, "xlsx": merged_xlsx, "xls": merged_xls, "ods": merged_ods,
                  "odt": merged_odt, "odp": merged_odp}
-ODP_STEP = pytest.mark.xfail(strict=True, reason="step C: presentations are not read yet")
 
 
-@pytest.mark.parametrize("fmt, shape", [pytest.param(fmt, shape, marks=[ODP_STEP] if fmt == "odp" else [],
-                                                     id=f"{fmt}, {shape}")
+@pytest.mark.parametrize("fmt, shape", [pytest.param(fmt, shape, id=f"{fmt}, {shape}")
                                         for fmt, shape in itertools.product(MERGE_FORMATS, MERGE_SHAPES)])
 def test_merged_cells(tmp_path, fmt, shape):
     assert MERGE_FORMATS[fmt](shape, tmp_path / f"merged.{fmt}") == MERGE_SHAPES[shape][2]
@@ -1139,7 +1137,6 @@ def test_read_docx_text_inside_other_elements(tmp_path, first, xml_parts, last, 
 
 
 # a line break (shift+enter) is a new line, and a slide title is always one line
-@pytest.mark.xfail(strict=True, reason="step C: pptx gives \\x0b for a line break")
 def test_read_pptx_line_breaks(tmp_path):
     p = pptx.Presentation()
     slide = p.slides.add_slide(p.slide_layouts[LAYOUT_TITLE_ONLY])
@@ -1156,10 +1153,17 @@ def test_read_pptx_line_breaks(tmp_path):
         frame.text = "α"
         frame.paragraphs[0].add_line_break()
         frame.paragraphs[0].add_run().text = "β"
+    table = slide.shapes.add_table(2, 2, PptxInches(1), PptxInches(5), PptxInches(4), PptxInches(1)).table
+    table.cell(0, 0).text, table.cell(0, 1).text, table.cell(1, 0).text = "Όνομα", "Σχόλιο", "Μαρία"
+    cell = table.cell(1, 1).text_frame
+    cell.text = "α"
+    cell.paragraphs[0].add_line_break()
+    cell.paragraphs[0].add_run().text = "β"
     f = tmp_path / "breaks.pptx"
     p.save(str(f))
 
-    assert read_pptx(f) == "# Slide 1: Γραμμή 1 Γραμμή 2 Γραμμή 3\n\nα\nβ\n\nNotes: α\nβ"
+    assert read_pptx(f) == ("# Slide 1: Γραμμή 1 Γραμμή 2 Γραμμή 3\n\nα\nβ\n\n"
+                            "Όνομα: Μαρία; Σχόλιο: α / β\n\nNotes: α\nβ")
 
 
 # a hidden slide is read like the others

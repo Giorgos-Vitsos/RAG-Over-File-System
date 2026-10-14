@@ -717,9 +717,6 @@ def test_parse_file_odt_without_text_is_empty(tmp_path):
 
 # ---------------- .odp ----------------
 
-ODP = pytest.mark.xfail(strict=True, reason="step C: presentations are not read yet")
-
-
 # a frame with a text box on a slide; cls is the presentation class (title, outline, subtitle, notes)
 def slide_box(*paragraphs, cls=None):
     frame = Frame(**{"class": cls}) if cls else Frame()
@@ -767,7 +764,6 @@ def make_odp(path, mimetype=None):
 
 
 # the same content gives the same text in odp and in pptx
-@ODP
 def test_read_odp_gives_the_same_text_as_pptx(tmp_path):
     assert read_odf(make_odp(tmp_path / "talk.odp")) == EXPECTED_PPTX
 
@@ -780,6 +776,7 @@ ODP_CASES = {
     "title in two paragraphs": ([slide_box("Γραμμή 1", "  ", "Γραμμή 2", cls="title")], ": Γραμμή 1 Γραμμή 2"),
     "title after other shapes": ([slide_box("κείμενο"), slide_box("Τίτλος", cls="title")], ": Τίτλος\n\nκείμενο"),
     "only the first title is the title": ([slide_box("Α", cls="title"), slide_box("Β", cls="title")], ": Α\n\nΒ"),
+    "an empty title is still the title": ([slide_box(cls="title"), slide_box("Β", cls="title")], "\n\nΒ"),
     "subtitle is slide text": ([slide_box("Τίτλος", cls="title"), slide_box("υπότιτλος", cls="subtitle")],
                                ": Τίτλος\n\nυπότιτλος"),
     "paragraphs and a line break in one box": ([slide_box("α", para("β", OdfLineBreak(), "γ"))], "\n\nα\nβ\nγ"),
@@ -799,14 +796,12 @@ ODP_CASES = {
 
 
 # every kind of shape on one slide
-@ODP
 @pytest.mark.parametrize("shapes, expected", ODP_CASES.values(), ids=ODP_CASES.keys())
 def test_read_odp(tmp_path, shapes, expected):
     assert read_odf(write_odp(tmp_path / "talk.odp", shapes)) == "# Slide 1" + expected
 
 
 # a comment on a slide is not text; older libreoffice writes it with another prefix (odfpy can only write the new one)
-@ODP
 @pytest.mark.parametrize("comment_xml", [
     "<office:annotation><dc:creator>M</dc:creator><text:p>σχόλιο</text:p></office:annotation>",
     '<officeooo:annotation xmlns:officeooo="http://openoffice.org/2009/office"><dc:creator>M</dc:creator>'
@@ -826,7 +821,6 @@ def test_read_odp_slide_comment_is_not_text(tmp_path, comment_xml):
 
 
 # slides are numbered in order, empty and hidden ones too
-@ODP
 def test_read_odp_counts_every_slide(tmp_path):
     f = write_odp(tmp_path / "talk.odp", [slide_box("Α", cls="title")], [], [slide_box("Γ", cls="title")], hidden=(3,))
 
@@ -834,7 +828,6 @@ def test_read_odp_counts_every_slide(tmp_path):
 
 
 # the master page, the page picture of the notes and the footer are not slide text
-@ODP
 def test_read_odp_master_and_footer_are_not_text(tmp_path):
     f = write_odp(tmp_path / "talk.odp", [slide_box("κείμενο")], master_text="Όνομα μαθήματος", footer="Σελίδα")
 
@@ -842,7 +835,6 @@ def test_read_odp_master_and_footer_are_not_text(tmp_path):
 
 
 # some programs put spaces and new lines between the tags of content.xml
-@ODP
 def test_read_odp_pretty_printed_xml(tmp_path):
     plain = make_odp(tmp_path / "plain.odp")
     pretty = tmp_path / "pretty.odp"
@@ -857,20 +849,17 @@ def test_read_odp_pretty_printed_xml(tmp_path):
 
 
 # a presentation without slides gives empty text
-@ODP
 def test_read_odp_without_slides(tmp_path):
     assert read_odf(write_odp(tmp_path / "empty.odp")) == ""
 
 
 # odp and its template point to read_odf
-@ODP
 @pytest.mark.parametrize("ext", [".odp", ".otp"])
 def test_odp_extensions_are_registered(ext):
     assert PARSERS.get(ext) is read_odf
 
 
 # odp, its template, an upper case name, and an odp saved as .odt through parse_file
-@ODP
 @pytest.mark.parametrize("name, mimetype", [
     ("talk.odp", None),
     ("template.otp", "application/vnd.oasis.opendocument.presentation-template"),
@@ -886,7 +875,6 @@ def test_parse_file_reads_odp(tmp_path, name, mimetype):
 
 
 # a broken odp is failed, not a crash
-@ODP
 def test_parse_file_marks_a_broken_odp_as_failed(tmp_path):
     doc = parse_one(tmp_path, "broken.odp", b"this is not a zip file")
 

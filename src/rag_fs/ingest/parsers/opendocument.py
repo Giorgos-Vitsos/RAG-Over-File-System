@@ -22,14 +22,13 @@ ODF_SKIP={
 def is_skipped(tag:str)->bool:
     return tag in ODF_SKIP or tag.endswith(":annotation")
 
-
 def read_odf(path: Path)->str:
     file=load(str(path))
     for node in file.body.childNodes:
         if node.tagName=="office:text":
             return read_odt(file,node)
         elif node.tagName=="office:presentation":
-            return read_odp(file,node)
+            return read_odp(node)
     raise ValueError("Not an ODF text document or presentation")
 
 def read_odt(file:OpenDocument,text)->str:
@@ -210,5 +209,40 @@ def read_ods(path: Path)->str:
             sheets.append((table.getAttribute("name"),fill_merged(rows,merges),header_rows))
     return format_sheets(sheets)
 
-def read_odp(file:OpenDocument,presentation)->str:
-    raise NotImplementedError("presentations are not read yet")
+def read_odp(presentation)->str:
+    output=[]
+    page_num=0
+    for page in presentation.childNodes:
+        if page.tagName!="draw:page":
+            continue
+        page_num+=1#we count only real pages
+        header=f"# Slide {page_num}"
+        blocks=[]
+        notes=""
+        has_title=False#flag so we keep only one title
+        for shape in page.childNodes:
+            if shape.tagName=="presentation:notes":
+                notes="\n".join(read_blocks(shape,None))#None because we dont have headers
+            elif not has_title and shape.tagName=="draw:frame" and shape.getAttribute("class")=="title":
+                title=" ".join(read_blocks(shape,None)).replace("\n"," ")
+                if title:
+                    header=header+f": {title}"
+                has_title=True#empty title is still the title
+            else: 
+                blocks.extend(odp_shape(shape))
+        output.append(header)
+        output.extend(blocks)
+        if notes:
+            output.append(f"Notes: {notes}")
+    return "\n\n".join(output)
+
+def odp_shape(shape)->list[str]:
+    if shape.tagName=="draw:g":#if we have a group
+        blocks=[]
+        for child in shape.childNodes:
+            blocks.extend(odp_shape(child))
+        return blocks
+    text="\n".join(gather_data(shape,None))
+    if not text:
+        return []
+    return [text]
