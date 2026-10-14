@@ -1038,10 +1038,11 @@ def test_extension_is_registered(ext, reader):
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+STEP_D1 = pytest.mark.xfail(strict=True, reason="step D1: docx text is read with python-docx, not from the xml")
 
 
 # a table inside a table cell (common in forms)
-@pytest.mark.xfail(strict=True, reason="L32: cell.text skips tables inside the cell")
+@STEP_D1
 def test_read_docx_table_inside_a_table_cell(tmp_path):
     d = docx.Document()
     outer = d.add_table(rows=1, cols=2)
@@ -1059,7 +1060,7 @@ def test_read_docx_table_inside_a_table_cell(tmp_path):
 
 
 # word saves a text box twice, we want it once
-@pytest.mark.xfail(strict=True, reason="L32: text boxes are not read")
+@STEP_D1
 def test_read_docx_text_box_appears_once(tmp_path):
     d = docx.Document()
     d.add_paragraph("Πριν")
@@ -1114,12 +1115,12 @@ def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
                             '<w:p><w:r><w:t>Όνομα φοιτητή: Μαρία Παπαδάκη</w:t></w:r></w:p>'
                             '</w:sdtContent></w:sdt>'], None, False,
                  "Αίτηση\n\nΌνομα φοιτητή: Μαρία Παπαδάκη",
-                 marks=pytest.mark.xfail(strict=True, reason="L32: content controls (w:sdt) are skipped"),
+                 marks=STEP_D1,
                  id="content control around paragraphs"),
     pytest.param("Ημερομηνία: ", ['<w:sdt><w:sdtPr/><w:sdtContent>'
                                   '<w:r><w:t>15/06/2026</w:t></w:r></w:sdtContent></w:sdt>'], None, True,
                  "Ημερομηνία: 15/06/2026",
-                 marks=pytest.mark.xfail(strict=True, reason="L32: content controls (w:sdt) are skipped"),
+                 marks=STEP_D1,
                  id="content control inside a paragraph"),
     pytest.param("Η προθεσμία είναι ",
                  ['<w:del w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z">'
@@ -1127,13 +1128,103 @@ def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
                   '<w:ins w:id="2" w:author="A" w:date="2026-01-01T00:00:00Z">'
                   '<w:r><w:t>η Τρίτη</w:t></w:r></w:ins>'], ".", True,
                  "Η προθεσμία είναι η Τρίτη.",
-                 marks=pytest.mark.xfail(strict=True, reason="L32: inserted text (w:ins) is skipped"),
+                 marks=STEP_D1,
                  id="tracked changes give the current text"),
     pytest.param("Δες ", ['<w:hyperlink w:anchor="top"><w:r><w:t>τον οδηγό</w:t></w:r></w:hyperlink>'],
                  " για λεπτομέρειες.", True, "Δες τον οδηγό για λεπτομέρειες.", id="hyperlink text"),
+    pytest.param("α", ['<w:r><w:br w:type="page"/><w:t>β</w:t></w:r>'], None, True, "α\nβ",
+                 marks=STEP_D1, id="page break inside a paragraph"),
+    pytest.param("e", ['<w:r><w:noBreakHyphen/><w:t>mail soft</w:t><w:softHyphen/><w:t>ware</w:t></w:r>'], None, True,
+                 "e-mail software", id="non-breaking and soft hyphen"),
+    pytest.param("α", ['<w:ins w:id="5" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:tab/><w:t>β</w:t><w:br/><w:t>γ</w:t></w:r></w:ins>'], None, True,
+                 "α\tβ\nγ", marks=STEP_D1, id="tab and line break inside an insertion"),
+    pytest.param("Πρώτα ", ['<w:moveFrom w:id="6" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>παλιά θέση </w:t></w:r></w:moveFrom>',
+                            '<w:moveTo w:id="7" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>νέα θέση</w:t></w:r></w:moveTo>'], None, True,
+                 "Πρώτα νέα θέση", marks=STEP_D1, id="moved text appears once"),
+    pytest.param("Συνάντηση στο ", ['<w:smartTag w:uri="urn:x" w:element="place"><w:r><w:t>Ηράκλειο</w:t></w:r>'
+                                    '</w:smartTag>'], None, True, "Συνάντηση στο Ηράκλειο", marks=STEP_D1, id="smart tag"),
+    pytest.param("Σελίδα ", ['<w:fldSimple w:instr=" PAGE "><w:r><w:t>3</w:t></w:r></w:fldSimple>'], None, True,
+                 "Σελίδα 3", marks=STEP_D1, id="simple field shows its result"),
+    pytest.param("Βλ. ", ['<w:r><w:fldChar w:fldCharType="begin"/></w:r>',
+                          '<w:r><w:instrText xml:space="preserve"> REF _Ref1 \\h </w:instrText></w:r>',
+                          '<w:r><w:fldChar w:fldCharType="separate"/></w:r>', '<w:r><w:t>Πίνακας 2</w:t></w:r>',
+                          '<w:r><w:fldChar w:fldCharType="end"/></w:r>'], None, True, "Βλ. Πίνακας 2",
+                 id="field result yes, field code no"),
+    pytest.param("Κείμενο", ['<w:commentRangeStart w:id="0"/>', '<w:r><w:t xml:space="preserve"> με σχόλιο</w:t></w:r>',
+                             '<w:commentRangeEnd w:id="0"/>', '<w:r><w:commentReference w:id="0"/></w:r>'], None, True,
+                 "Κείμενο με σχόλιο", id="comment marks are not text"),
+    pytest.param("Κείμενο", [f'<w:p><w:pPr><w:rPr><w:del w:id="3" w:author="A" w:date="2026-01-01T00:00:00Z"/></w:rPr></w:pPr><w:del w:id="4" w:author="A" w:date="2026-01-01T00:00:00Z">'
+                             '<w:r><w:delText>σβησμένη παράγραφος</w:delText></w:r></w:del></w:p>'], None, False,
+                 "Κείμενο", id="deleted paragraph"),
+    pytest.param("Κείμενο", ['<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/>'
+                             '<w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:r><w:t>Εισαγωγή 1</w:t>'
+                             '</w:r></w:p></w:sdtContent></w:sdt>'], None, False, "Κείμενο", id="table of contents"),
+    pytest.param("Βαθμοί", ['<w:sdt><w:sdtPr/><w:sdtContent><w:tbl><w:tblPr/><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Όνομα</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Βαθμός</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>Μαρία</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>9</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:sdtContent></w:sdt>'], None, False,
+                 "Βαθμοί\n\nΌνομα: Μαρία; Βαθμός: 9", marks=STEP_D1, id="content control around a table"),
+    pytest.param("", ['<w:r xmlns:v="urn:schemas-microsoft-com:vml"><w:pict><v:shape><v:textbox><w:txbxContent>'
+                      '<w:p><w:r><w:t>Πλαίσιο</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>'],
+                 None, True, "Πλαίσιο", marks=STEP_D1, id="text box of old word (vml only)"),
 ])
 def test_read_docx_text_inside_other_elements(tmp_path, first, xml_parts, last, inside, expected):
     assert read_docx(docx_with_xml(tmp_path, first, xml_parts, last, inside)) == expected
+
+
+# rows word repeats at the top of every page are the header; google writes w:val="0" on every row
+@pytest.mark.parametrize("rows, marks, expected", [
+    ([["2023", "2024"], ["120", "340"]], [], "2023 | 2024\n120 | 340"),
+    pytest.param([["2023", "2024"], ["120", "340"]], [None], "2023: 120; 2024: 340", marks=STEP_D1),
+    ([["2023", "2024"], ["120", "340"]], ["0", "0"], "2023 | 2024\n120 | 340"),
+    ([["2023", "2024"], ["120", "340"]], ["false"], "2023 | 2024\n120 | 340"),
+    pytest.param([["Βαθμοί", "Βαθμοί"], ["Γραπτό", "Προφορικό"], ["9", "8"]], ["1", "true"],
+                 "Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8", marks=STEP_D1),
+    pytest.param([["2023", "2024"], ["120", "340"], ["150", "360"]], ["0", None],
+                 "2023 | 2024\n120 | 340\n150 | 360"),
+], ids=["no mark", "marked", "google: val 0", "val false", "two marked rows", "only rows at the top count"])
+def test_read_docx_table_header_rows(tmp_path, rows, marks, expected):
+    d = docx.Document()
+    table = d.add_table(rows=len(rows), cols=len(rows[0]))
+    for r, row in enumerate(rows):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = value
+    for row, value in zip(table.rows, marks):
+        val = "" if value is None else f' w:val="{value}"'
+        row._tr.get_or_add_trPr().append(parse_xml(f'<w:tblHeader xmlns:w="{W_NS}"{val}/>'))
+    f = tmp_path / "header.docx"
+    d.save(str(f))
+
+    assert read_docx(f) == expected
+
+
+# the alt text of a picture: the description, else the title (like odt)
+@pytest.mark.parametrize("descr, title, expected", [
+    ("Διάγραμμα", "Λογότυπο", "[Image: Διάγραμμα]"),
+    pytest.param("", "Λογότυπο", "[Image: Λογότυπο]", marks=STEP_D1),
+    ("", "", ""),
+])
+def test_read_docx_picture_alt_text(tmp_path, descr, title, expected):
+    image = tmp_path / "img.png"
+    Image.new("RGB", (60, 30), "white").save(image)
+    d = docx.Document()
+    d.add_picture(str(image), width=Inches(1))
+    d.inline_shapes[-1]._inline.docPr.set("descr", descr)
+    d.inline_shapes[-1]._inline.docPr.set("title", title)
+    f = tmp_path / "picture.docx"
+    d.save(str(f))
+
+    assert read_docx(f) == expected
+
+
+# a heading style inside a table cell is not a heading of the document
+def test_read_docx_heading_inside_a_cell(tmp_path):
+    d = docx.Document()
+    table = d.add_table(rows=2, cols=2)
+    table.cell(0, 0).text, table.cell(0, 1).text, table.cell(1, 0).text = "Ενότητα", "Σημείωση", "Α"
+    table.cell(1, 1).paragraphs[0].text = "Τίτλος"
+    table.cell(1, 1).paragraphs[0].style = "Heading 1"
+    f = tmp_path / "cell.docx"
+    d.save(str(f))
+
+    assert read_docx(f) == "Ενότητα: Α; Σημείωση: Τίτλος"
 
 
 # a line break (shift+enter) is a new line, and a slide title is always one line

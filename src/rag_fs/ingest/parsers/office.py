@@ -1,7 +1,6 @@
 from pathlib import Path
 import docx
 from docx.table import Table
-from docx.text.paragraph import Paragraph
 from .tabular import format_rows,fill_merged
 from docx.document import Document as DocxDocument
 import io
@@ -14,6 +13,7 @@ from pptx.shapes.group import GroupShape
 from pptx.presentation import Presentation as PptxPresentation
 from striprtf.striprtf import rtf_to_text
 from .text import read_text
+from docx.oxml.ns import qn
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
@@ -30,6 +30,17 @@ SLIDE_VARIANTS=[#types of ppt variants
     "application/vnd.ms-powerpoint.slideshow.macroEnabled.main+xml"
 ]
 
+MC="{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+WP_DOCPR="{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}docPr"
+
+DOCX_SKIP={#tags without text of the document
+    qn("w:del"),qn("w:moveFrom"),qn("w:delText"),qn("w:instrText"),
+    qn("w:pPr"),qn("w:rPr"),qn("w:tcPr"),qn("w:sdtPr"),qn("w:sectPr"),
+    qn("w:footnoteReference"),qn("w:endnoteReference"),qn("w:commentReference")
+}
+
+FALSE_VALUES=("0","false","off")
+
 def heading_level(style_name:str)->int:
     if style_name=="Title":
         return 1
@@ -42,34 +53,125 @@ def heading_level(style_name:str)->int:
         return 0
 
 def docx_to_text(doc: DocxDocument)->str:
-    blocks=[]
-    for block in doc.iter_inner_content():
-        if isinstance(block,Paragraph):
-            for alt in block._p.xpath(".//wp:docPr/@descr"):#we search for images
-                if alt.strip():
-                    blocks.append(f"[Image: {alt}]")
-            text=block.text.strip()
-            if not text:#if the block is empty
-                continue
-            if not block.style is None:
-                level=heading_level(str(block.style.name))
-            else:
-                level=0
-            if level>0:
-                text="#"*level+" "+text
-            blocks.append(text)
-        elif isinstance(block,Table):
-            rows=[]
-            for row in block.rows:
-                cells=[]
-                for cell in row.cells:
-                    cells.append(cell.text)
-                rows.append(cells)
-            text=format_rows(rows)
-            if text:
-                blocks.append(text)
-    return "\n\n".join(blocks)
+    headings={}
+    for style in doc.styles:
+        headings[style.style_id]=heading_level(str(style.name))
+    return "\n\n".join(docx_blocks(doc.element.body,doc,headings))
 
+def docx_blocks(node,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
+    blocks=[]
+    for child in node:
+        blocks.extend(docx_block(child,doc,headings))
+    return blocks
+
+def docx_block(node,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
+    tag=node.tag
+    if tag in DOCX_SKIP:
+        return []
+    if tag==qn("w:p"):
+        return docx_paragraph(node,doc,headings)
+    if tag==qn("w:tbl"):
+        text=docx_table(Table(node,doc._body),doc)
+        if text:
+            return [text]
+        return []
+    if tag==qn("w:sdt") and is_toc(node):#the table of contents repeats data so we skip it
+        return []
+    if tag==MC+"AlternateContent":
+        return docx_blocks(node[0],doc,headings)#we read only node[0] because next node repeats the data
+    return docx_blocks(node,doc,headings)#in wrappers and groups we search the children
+
+def is_toc(sdt)->bool:
+    properties=sdt.find(qn("w:sdtPr"))
+    if properties is None:
+        return False
+    for gallery in properties.iter(qn("w:docPartGallery")):
+        if gallery.get(qn("w:val"))=="Table of Contents":
+            return True
+    return False
+
+def docx_paragraph(p,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
+    shapes=[]#pictures and text boxes
+    lines=[]
+    for line in docx_inline(p,shapes).split("\n"):
+        if line.strip():
+            lines.append(line.strip())
+    blocks=[]
+    for shape in shapes:
+        blocks.extend(docx_shape(shape,doc,headings))
+    if not lines:
+        return blocks
+    text="\n".join(lines)
+    level=0
+    style=p.find(qn("w:pPr")+"/"+qn("w:pStyle"))
+    if headings is not None and style is not None:
+        level=headings.get(style.get(qn("w:val")),0)
+    if level>0:
+        text="#"*level+" "+text
+    blocks.append(text)
+    return blocks
+
+def docx_inline(node,shapes:list)->str:
+    parts=[]
+    for child in node:
+        tag=child.tag
+        if tag in DOCX_SKIP:
+            continue
+        if tag==qn("w:t"):
+            parts.append(child.text or "")
+        elif tag==qn("w:tab"):
+            parts.append("\t")
+        elif tag in (qn("w:br"),qn("w:cr")):#a line or page break inside the paragraph
+            parts.append("\n")
+        elif tag==qn("w:noBreakHyphen"):
+            parts.append("-")
+        elif tag in (qn("w:drawing"),qn("w:pict")):
+            shapes.append(child)
+        elif tag==MC+"AlternateContent":#the same content twice, we read only the first form
+            parts.append(docx_inline(child[0],shapes))
+        else:
+            parts.append(docx_inline(child,shapes))#runs, links, insertions, fields and other wrappers
+    return "".join(parts)
+
+def docx_shape(shape,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
+    blocks=[]
+    for properties in outside_boxes(shape,WP_DOCPR):
+        alt=(properties.get("descr") or properties.get("title") or "").strip()
+        if alt:
+            blocks.append(f"[Image: {alt}]")
+    for box in outside_boxes(shape,qn("w:txbxContent")):
+        blocks.extend(docx_blocks(box,doc,headings))
+    return blocks
+
+def outside_boxes(node,tag:str)->list:
+    found=[]#the elements with this tag that are not inside a text box (the box reads its own)
+    for child in node:
+        if child.tag==tag:
+            found.append(child)
+        elif child.tag not in (qn("w:txbxContent"),MC+"Fallback"):
+            found.extend(outside_boxes(child,tag))
+    return found
+
+def docx_table(table:Table,doc:DocxDocument)->str:
+    rows=[]
+    for row in table.rows:
+        cells=[]
+        for cell in row.cells:#python-docx gives a merged cell in every place it covers
+            cells.append("\n".join(docx_blocks(cell._tc,doc,None)))
+        rows.append(cells)
+    return format_rows(rows,docx_header_rows(table))
+
+def docx_header_rows(table:Table)->int:
+    count=0
+    for row in table.rows:#only the rows at the top can be the header
+        properties=row._tr.trPr
+        header=None
+        if properties is not None:
+            header=properties.find(qn("w:tblHeader"))
+        if header is None or header.get(qn("w:val")) in FALSE_VALUES:
+            break
+        count+=1
+    return count
 
 def read_docx(path: Path)->str:
     doc=docx.Document(str(path))
