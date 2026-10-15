@@ -13,10 +13,10 @@ import pptx
 import pytest
 from docx.oxml import parse_xml
 from docx.shared import Inches
-from odf.draw import Frame, Page
+from odf.draw import Frame, Page, TextBox as OdfTextBox
 from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
 from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableRow
-from odf.text import P as OdfP
+from odf.text import LineBreak as OdfLineBreak, P as OdfP
 from PIL import Image
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
@@ -1038,11 +1038,9 @@ def test_extension_is_registered(ext, reader):
 
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-STEP_D1 = pytest.mark.xfail(strict=True, reason="step D1: docx text is read with python-docx, not from the xml")
 
 
 # a table inside a table cell (common in forms)
-@STEP_D1
 def test_read_docx_table_inside_a_table_cell(tmp_path):
     d = docx.Document()
     outer = d.add_table(rows=1, cols=2)
@@ -1060,7 +1058,6 @@ def test_read_docx_table_inside_a_table_cell(tmp_path):
 
 
 # word saves a text box twice, we want it once
-@STEP_D1
 def test_read_docx_text_box_appears_once(tmp_path):
     d = docx.Document()
     d.add_paragraph("Πριν")
@@ -1115,12 +1112,10 @@ def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
                             '<w:p><w:r><w:t>Όνομα φοιτητή: Μαρία Παπαδάκη</w:t></w:r></w:p>'
                             '</w:sdtContent></w:sdt>'], None, False,
                  "Αίτηση\n\nΌνομα φοιτητή: Μαρία Παπαδάκη",
-                 marks=STEP_D1,
                  id="content control around paragraphs"),
     pytest.param("Ημερομηνία: ", ['<w:sdt><w:sdtPr/><w:sdtContent>'
                                   '<w:r><w:t>15/06/2026</w:t></w:r></w:sdtContent></w:sdt>'], None, True,
                  "Ημερομηνία: 15/06/2026",
-                 marks=STEP_D1,
                  id="content control inside a paragraph"),
     pytest.param("Η προθεσμία είναι ",
                  ['<w:del w:id="1" w:author="A" w:date="2026-01-01T00:00:00Z">'
@@ -1128,23 +1123,21 @@ def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
                   '<w:ins w:id="2" w:author="A" w:date="2026-01-01T00:00:00Z">'
                   '<w:r><w:t>η Τρίτη</w:t></w:r></w:ins>'], ".", True,
                  "Η προθεσμία είναι η Τρίτη.",
-                 marks=STEP_D1,
                  id="tracked changes give the current text"),
     pytest.param("Δες ", ['<w:hyperlink w:anchor="top"><w:r><w:t>τον οδηγό</w:t></w:r></w:hyperlink>'],
                  " για λεπτομέρειες.", True, "Δες τον οδηγό για λεπτομέρειες.", id="hyperlink text"),
-    pytest.param("α", ['<w:r><w:br w:type="page"/><w:t>β</w:t></w:r>'], None, True, "α\nβ",
-                 marks=STEP_D1, id="page break inside a paragraph"),
+    pytest.param("α", ['<w:r><w:br w:type="page"/><w:t>β</w:t></w:r>'], None, True, "α\nβ", id="page break inside a paragraph"),
     pytest.param("e", ['<w:r><w:noBreakHyphen/><w:t>mail soft</w:t><w:softHyphen/><w:t>ware</w:t></w:r>'], None, True,
                  "e-mail software", id="non-breaking and soft hyphen"),
     pytest.param("α", ['<w:ins w:id="5" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:tab/><w:t>β</w:t><w:br/><w:t>γ</w:t></w:r></w:ins>'], None, True,
-                 "α\tβ\nγ", marks=STEP_D1, id="tab and line break inside an insertion"),
+                 "α\tβ\nγ", id="tab and line break inside an insertion"),
     pytest.param("Πρώτα ", ['<w:moveFrom w:id="6" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>παλιά θέση </w:t></w:r></w:moveFrom>',
                             '<w:moveTo w:id="7" w:author="A" w:date="2026-01-01T00:00:00Z"><w:r><w:t>νέα θέση</w:t></w:r></w:moveTo>'], None, True,
-                 "Πρώτα νέα θέση", marks=STEP_D1, id="moved text appears once"),
+                 "Πρώτα νέα θέση", id="moved text appears once"),
     pytest.param("Συνάντηση στο ", ['<w:smartTag w:uri="urn:x" w:element="place"><w:r><w:t>Ηράκλειο</w:t></w:r>'
-                                    '</w:smartTag>'], None, True, "Συνάντηση στο Ηράκλειο", marks=STEP_D1, id="smart tag"),
+                                    '</w:smartTag>'], None, True, "Συνάντηση στο Ηράκλειο", id="smart tag"),
     pytest.param("Σελίδα ", ['<w:fldSimple w:instr=" PAGE "><w:r><w:t>3</w:t></w:r></w:fldSimple>'], None, True,
-                 "Σελίδα 3", marks=STEP_D1, id="simple field shows its result"),
+                 "Σελίδα 3", id="simple field shows its result"),
     pytest.param("Βλ. ", ['<w:r><w:fldChar w:fldCharType="begin"/></w:r>',
                           '<w:r><w:instrText xml:space="preserve"> REF _Ref1 \\h </w:instrText></w:r>',
                           '<w:r><w:fldChar w:fldCharType="separate"/></w:r>', '<w:r><w:t>Πίνακας 2</w:t></w:r>',
@@ -1160,10 +1153,23 @@ def docx_with_xml(tmp_path, first_text, xml_parts, last_text=None, inside=True):
                              '<w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent><w:p><w:r><w:t>Εισαγωγή 1</w:t>'
                              '</w:r></w:p></w:sdtContent></w:sdt>'], None, False, "Κείμενο", id="table of contents"),
     pytest.param("Βαθμοί", ['<w:sdt><w:sdtPr/><w:sdtContent><w:tbl><w:tblPr/><w:tblGrid><w:gridCol/><w:gridCol/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Όνομα</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Βαθμός</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>Μαρία</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>9</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:sdtContent></w:sdt>'], None, False,
-                 "Βαθμοί\n\nΌνομα: Μαρία; Βαθμός: 9", marks=STEP_D1, id="content control around a table"),
-    pytest.param("", ['<w:r xmlns:v="urn:schemas-microsoft-com:vml"><w:pict><v:shape><v:textbox><w:txbxContent>'
-                      '<w:p><w:r><w:t>Πλαίσιο</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>'],
-                 None, True, "Πλαίσιο", marks=STEP_D1, id="text box of old word (vml only)"),
+                 "Βαθμοί\n\nΌνομα: Μαρία; Βαθμός: 9", id="content control around a table"),
+    pytest.param("Κείμενο", ['<w:r xmlns:v="urn:schemas-microsoft-com:vml"><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>Πλαίσιο</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>'],
+                 None, True, "Πλαίσιο\n\nΚείμενο", id="text box of old word (vml only)"),
+    pytest.param("", ['<w:r xmlns:v="urn:schemas-microsoft-com:vml"><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>Έξω</w:t></w:r><w:r><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:t>Μέσα</w:t></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>'],
+                 None, True, "Μέσα\n\nΈξω", id="text box inside a text box"),
+    pytest.param("", ['<w:r xmlns:v="urn:schemas-microsoft-com:vml" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><w:pict><v:shape><v:textbox><w:txbxContent><w:p><w:r><w:drawing><wp:inline><wp:docPr id="1" name="P" descr="Λογότυπο"/></wp:inline></w:drawing></w:r></w:p></w:txbxContent></v:textbox></v:shape></w:pict></w:r>'],
+                 None, True, "[Image: Λογότυπο]", id="picture inside a text box"),
+    pytest.param("α", ['<w:r><w:t/><w:t>β</w:t></w:r>'], None, True, "αβ", id="empty w:t"),
+    pytest.param("Κείμενο", ['<mc:AlternateContent xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"><mc:Choice Requires="w14"><w:p><w:r><w:t>Νέα μορφή</w:t></w:r></w:p>'
+                             '</mc:Choice><mc:Fallback><w:p><w:r><w:t>Νέα μορφή</w:t></w:r></w:p></mc:Fallback>'
+                             '</mc:AlternateContent>'], None, False, "Κείμενο\n\nΝέα μορφή",
+                 id="paragraph written twice for old word"),
+    pytest.param("Κείμενο", ['<w:sdt><w:sdtPr><w:alias w:val="Σώμα"/></w:sdtPr><w:sdtContent>'
+                             '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery w:val="Table of Contents"/></w:docPartObj>'
+                             '</w:sdtPr><w:sdtContent><w:p><w:r><w:t>Εισαγωγή 1</w:t></w:r></w:p></w:sdtContent></w:sdt>'
+                             '<w:p><w:r><w:t>Το σώμα της εργασίας</w:t></w:r></w:p></w:sdtContent></w:sdt>'], None, False,
+                 "Κείμενο\n\nΤο σώμα της εργασίας", id="table of contents inside another content control"),
 ])
 def test_read_docx_text_inside_other_elements(tmp_path, first, xml_parts, last, inside, expected):
     assert read_docx(docx_with_xml(tmp_path, first, xml_parts, last, inside)) == expected
@@ -1172,11 +1178,11 @@ def test_read_docx_text_inside_other_elements(tmp_path, first, xml_parts, last, 
 # rows word repeats at the top of every page are the header; google writes w:val="0" on every row
 @pytest.mark.parametrize("rows, marks, expected", [
     ([["2023", "2024"], ["120", "340"]], [], "2023 | 2024\n120 | 340"),
-    pytest.param([["2023", "2024"], ["120", "340"]], [None], "2023: 120; 2024: 340", marks=STEP_D1),
+    ([["2023", "2024"], ["120", "340"]], [None], "2023: 120; 2024: 340"),
     ([["2023", "2024"], ["120", "340"]], ["0", "0"], "2023 | 2024\n120 | 340"),
     ([["2023", "2024"], ["120", "340"]], ["false"], "2023 | 2024\n120 | 340"),
-    pytest.param([["Βαθμοί", "Βαθμοί"], ["Γραπτό", "Προφορικό"], ["9", "8"]], ["1", "true"],
-                 "Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8", marks=STEP_D1),
+    ([["Βαθμοί", "Βαθμοί"], ["Γραπτό", "Προφορικό"], ["9", "8"]], ["1", "true"],
+                 "Βαθμοί - Γραπτό: 9; Βαθμοί - Προφορικό: 8"),
     pytest.param([["2023", "2024"], ["120", "340"], ["150", "360"]], ["0", None],
                  "2023 | 2024\n120 | 340\n150 | 360"),
 ], ids=["no mark", "marked", "google: val 0", "val false", "two marked rows", "only rows at the top count"])
@@ -1198,7 +1204,7 @@ def test_read_docx_table_header_rows(tmp_path, rows, marks, expected):
 # the alt text of a picture: the description, else the title (like odt)
 @pytest.mark.parametrize("descr, title, expected", [
     ("Διάγραμμα", "Λογότυπο", "[Image: Διάγραμμα]"),
-    pytest.param("", "Λογότυπο", "[Image: Λογότυπο]", marks=STEP_D1),
+    ("", "Λογότυπο", "[Image: Λογότυπο]"),
     ("", "", ""),
 ])
 def test_read_docx_picture_alt_text(tmp_path, descr, title, expected):
@@ -1333,3 +1339,102 @@ def test_read_rtf_footnote_is_not_glued_into_the_sentence(tmp_path):
 def test_read_rtf_rejects_files_that_are_not_rtf(tmp_path, content):
     with pytest.raises(ValueError):
         read_rtf(write_rtf(tmp_path, content))
+
+
+# ---- line breaks inside one paragraph (D52): the same text in docx, odt, pptx and odp ----
+BR = None  # a line break (shift+enter) in the parts of a paragraph
+
+
+def breaks_docx(parts, f):
+    d = docx.Document()
+    p = d.add_paragraph()
+    for part in parts:
+        if part is BR:
+            p.add_run().add_break()
+        else:
+            p.add_run(part)
+    d.save(str(f))
+    return read_docx(f)
+
+
+def odf_paragraph(parts):
+    p = OdfP()
+    for part in parts:
+        if part is BR:
+            p.addElement(OdfLineBreak())
+        else:
+            p.addText(part)
+    return p
+
+
+def breaks_odt(parts, f):
+    doc = OpenDocumentText()
+    doc.text.addElement(odf_paragraph(parts))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(f))
+    return read_odf(f)
+
+
+def breaks_pptx(parts, f):
+    p = pptx.Presentation()
+    box = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK]).shapes.add_textbox(
+        PptxInches(1), PptxInches(1), PptxInches(4), PptxInches(2))
+    paragraph = box.text_frame.paragraphs[0]
+    for part in parts:
+        if part is BR:
+            paragraph.add_line_break()
+        else:
+            paragraph.add_run().text = part
+    p.save(str(f))
+    return read_pptx(f).removeprefix("# Slide 1\n\n")
+
+
+def breaks_odp(parts, f):
+    doc = OpenDocumentPresentation()
+    frame = Frame()
+    box = OdfTextBox()
+    box.addElement(odf_paragraph(parts))
+    frame.addElement(box)
+    page = Page(masterpagename="Default")
+    page.addElement(frame)
+    doc.presentation.addElement(page)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(f))
+    return read_odf(f).removeprefix("# Slide 1\n\n")
+
+
+BREAK_FORMATS = {"docx": breaks_docx, "odt": breaks_odt, "pptx": breaks_pptx, "odp": breaks_odp}
+BREAK_CASES = {
+    "one break": (["α", BR, "β"], "α\nβ"),
+    "two breaks": (["α", BR, BR, "β"], "α\n\nβ"),
+    "three breaks": (["α", BR, BR, BR, "β"], "α\n\nβ"),
+    "spaces between two breaks": (["α", BR, "  ", BR, "β"], "α\n\nβ"),
+    "breaks at the start and the end": ([BR, BR, "α", BR, BR], "α"),
+    "two blank lines between three lines": (["α", BR, BR, "β", BR, BR, BR, "γ"], "α\n\nβ\n\nγ"),
+    "one break after an empty line": (["α", BR, BR, "β", BR, "γ"], "α\n\nβ\nγ"),
+}
+
+
+# one break is a new line, two or more are one empty line, in every format
+@pytest.mark.parametrize("fmt, case", [pytest.param(fmt, case, id=f"{fmt}, {case}")
+                                       for fmt, case in itertools.product(BREAK_FORMATS, BREAK_CASES)])
+def test_line_breaks_in_every_format(tmp_path, fmt, case):
+    parts, expected = BREAK_CASES[case]
+    assert BREAK_FORMATS[fmt](parts, tmp_path / f"breaks.{fmt}") == expected
+
+
+# an empty paragraph in a text box or in the notes is dropped, like in odp
+def test_read_pptx_empty_paragraphs_are_dropped(tmp_path):
+    p = pptx.Presentation()
+    frame = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK]).shapes.add_textbox(
+        PptxInches(1), PptxInches(1), PptxInches(4), PptxInches(2)).text_frame
+    frame.text = "α"
+    frame.add_paragraph().text = "   "
+    frame.add_paragraph().text = "β"
+    notes = p.slides[0].notes_slide.notes_text_frame
+    assert notes is not None
+    notes.text = "γ"
+    notes.add_paragraph().text = ""
+    notes.add_paragraph().text = "δ"
+    f = tmp_path / "empty.pptx"
+    p.save(str(f))
+
+    assert read_pptx(f) == "# Slide 1\n\nα\nβ\n\nNotes: γ\nδ"

@@ -5,6 +5,7 @@ from odf import teletype
 from odf.opendocument import load, OpenDocument
 from odf.style import Style
 from .tabular import fill_merged, format_rows, format_sheets
+from .text import clean_lines
 
 ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
 HEADING_NAME=re.compile(r"Heading_20_(\d+)")
@@ -105,12 +106,7 @@ def gather_data(node,headings:dict[str,int] | None)->list[str]:
     return blocks
 
 def get_paragraph_text(node,shapes:list)->str:
-    lines=[]
-    for line in odf_inline(node,shapes).split("\n"):#we clean every line of the paragraph
-        line=line.strip()
-        if line:
-            lines.append(line)
-    return "\n".join(lines)
+    return clean_lines(odf_inline(node,shapes))
 
 def odf_inline(node,shapes:list)->str:
     parts=[]

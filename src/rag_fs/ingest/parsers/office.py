@@ -14,6 +14,7 @@ from pptx.presentation import Presentation as PptxPresentation
 from striprtf.striprtf import rtf_to_text
 from .text import read_text
 from docx.oxml.ns import qn
+from .text import clean_lines
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
@@ -92,16 +93,12 @@ def is_toc(sdt)->bool:
 
 def docx_paragraph(p,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
     shapes=[]#pictures and text boxes
-    lines=[]
-    for line in docx_inline(p,shapes).split("\n"):
-        if line.strip():
-            lines.append(line.strip())
+    text=clean_lines(docx_inline(p,shapes))
     blocks=[]
     for shape in shapes:
         blocks.extend(docx_shape(shape,doc,headings))
-    if not lines:
+    if not text:
         return blocks
-    text="\n".join(lines)
     level=0
     style=p.find(qn("w:pPr")+"/"+qn("w:pStyle"))
     if headings is not None and style is not None:#we add the headings
@@ -220,11 +217,18 @@ def pptx_to_text(ppt: PptxPresentation)->str:
         if slide.has_notes_slide:#we add notes if they exist
             notes=slide.notes_slide.notes_text_frame
             if notes is not None:
-                notes_txt=notes.text.strip().replace("\x0b","\n")
+                notes_txt=pptx_frame_text(notes)
                 if notes_txt:
                     output.append(f"Notes: {notes_txt}")     
     return "\n\n".join(output)
 
+def pptx_frame_text(frame)->str:
+    paragraphs=[]
+    for paragraph in frame.paragraphs:
+        text=clean_lines(paragraph.text.replace("\x0b","\n"))#python-pptx gives a line break as \x0b
+        if text:
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
 
 def read_pptx(path: Path)->str:
     ppt=pptx.Presentation(str(path))
@@ -236,7 +240,7 @@ def format_shape(shape:BaseShape)->list[str]:
         for sub_shape in shape.shapes:
             output.extend(format_shape(sub_shape))
     elif isinstance(shape, Shape):
-        text=shape.text_frame.text.strip().replace("\x0b","\n")
+        text=pptx_frame_text(shape.text_frame)
         if text:
             output.append(text)
     elif isinstance(shape,GraphicFrame):

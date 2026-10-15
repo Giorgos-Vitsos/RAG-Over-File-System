@@ -15,3 +15,17 @@ def read_text(path: Path)->str:
     if "\x00" in text:#we check for NULL byte
         raise ValueError(f"{path} is not a text file")
     return text
+
+def clean_lines(text:str)->str:
+    lines=[]
+    empty=False
+    for line in text.split("\n"):
+        line=line.strip()
+        if not line:
+            empty=True
+            continue
+        if empty and lines:#we delete multiple empty lines
+            lines.append("")
+        lines.append(line)
+        empty=False
+    return "\n".join(lines)
