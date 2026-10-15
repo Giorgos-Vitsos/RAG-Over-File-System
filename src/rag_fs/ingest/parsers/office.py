@@ -104,7 +104,7 @@ def docx_paragraph(p,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
     text="\n".join(lines)
     level=0
     style=p.find(qn("w:pPr")+"/"+qn("w:pStyle"))
-    if headings is not None and style is not None:
+    if headings is not None and style is not None:#we add the headings
         level=headings.get(style.get(qn("w:val")),0)
     if level>0:
         text="#"*level+" "+text
@@ -121,30 +121,30 @@ def docx_inline(node,shapes:list)->str:
             parts.append(child.text or "")
         elif tag==qn("w:tab"):
             parts.append("\t")
-        elif tag in (qn("w:br"),qn("w:cr")):#a line or page break inside the paragraph
+        elif tag in (qn("w:br"),qn("w:cr")):
             parts.append("\n")
         elif tag==qn("w:noBreakHyphen"):
             parts.append("-")
         elif tag in (qn("w:drawing"),qn("w:pict")):
             shapes.append(child)
-        elif tag==MC+"AlternateContent":#the same content twice, we read only the first form
-            parts.append(docx_inline(child[0],shapes))
+        elif tag==MC+"AlternateContent":
+            parts.append(docx_inline(child[0],shapes))#we read only node[0] because next node repeats the data
         else:
-            parts.append(docx_inline(child,shapes))#runs, links, insertions, fields and other wrappers
+            parts.append(docx_inline(child,shapes))
     return "".join(parts)
 
 def docx_shape(shape,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
     blocks=[]
     for properties in outside_boxes(shape,WP_DOCPR):
-        alt=(properties.get("descr") or properties.get("title") or "").strip()
+        alt=(properties.get("descr") or properties.get("title") or "").strip()#we get either the desc or title or empty
         if alt:
             blocks.append(f"[Image: {alt}]")
-    for box in outside_boxes(shape,qn("w:txbxContent")):
+    for box in outside_boxes(shape,qn("w:txbxContent")):#it holds text and no figures
         blocks.extend(docx_blocks(box,doc,headings))
     return blocks
 
 def outside_boxes(node,tag:str)->list:
-    found=[]#the elements with this tag that are not inside a text box (the box reads its own)
+    found=[]
     for child in node:
         if child.tag==tag:
             found.append(child)
@@ -156,7 +156,7 @@ def docx_table(table:Table,doc:DocxDocument)->str:
     rows=[]
     for row in table.rows:
         cells=[]
-        for cell in row.cells:#python-docx gives a merged cell in every place it covers
+        for cell in row.cells:
             cells.append("\n".join(docx_blocks(cell._tc,doc,None)))
         rows.append(cells)
     return format_rows(rows,docx_header_rows(table))
@@ -168,7 +168,7 @@ def docx_header_rows(table:Table)->int:
         header=None
         if properties is not None:
             header=properties.find(qn("w:tblHeader"))
-        if header is None or header.get(qn("w:val")) in FALSE_VALUES:
+        if header is None or header.get(qn("w:val")) in FALSE_VALUES:#if no more header rows
             break
         count+=1
     return count
