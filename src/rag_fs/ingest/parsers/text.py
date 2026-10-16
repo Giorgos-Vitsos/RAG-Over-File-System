@@ -29,3 +29,17 @@ def clean_lines(text:str)->str:
         lines.append(line)
         empty=False
     return "\n".join(lines)
+
+def clean_address(address:str)->str:
+    address=address.lower().strip()
+    for prefix in ("mailto:","https://","http://","www."):
+        address=address.removeprefix(prefix)
+    return address.rstrip("/")
+
+def with_address(text:str,address:str)->str:
+    if not address or address.startswith("#") or not text.strip():
+        return text
+    if clean_address(text)==clean_address(address):
+        return text
+    core=text.rstrip()#we remove the end spaces so we can add the link
+    return f"{core} ({address})"+text[len(core):]#we re-introduce the spaces

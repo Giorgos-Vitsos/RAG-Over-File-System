@@ -14,7 +14,8 @@ from pptx.presentation import Presentation as PptxPresentation
 from striprtf.striprtf import rtf_to_text
 from .text import read_text
 from docx.oxml.ns import qn
-from .text import clean_lines
+from .text import clean_lines,with_address
+from pptx.oxml.ns import qn as pptx_qn
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
@@ -93,7 +94,7 @@ def is_toc(sdt)->bool:
 
 def docx_paragraph(p,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
     shapes=[]#pictures and text boxes
-    text=clean_lines(docx_inline(p,shapes))
+    text=clean_lines(docx_inline(p,shapes,doc))
     blocks=[]
     for shape in shapes:
         blocks.extend(docx_shape(shape,doc,headings))
@@ -108,7 +109,7 @@ def docx_paragraph(p,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
     blocks.append(text)
     return blocks
 
-def docx_inline(node,shapes:list)->str:
+def docx_inline(node,shapes:list,doc:DocxDocument)->str:
     parts=[]
     for child in node:
         tag=child.tag
@@ -124,11 +125,19 @@ def docx_inline(node,shapes:list)->str:
             parts.append("-")
         elif tag in (qn("w:drawing"),qn("w:pict")):
             shapes.append(child)
+        elif tag==qn("w:hyperlink"):
+            parts.append(with_address(docx_inline(child,shapes,doc),docx_link(child,doc)))
         elif tag==MC+"AlternateContent":
-            parts.append(docx_inline(child[0],shapes))#we read only node[0] because next node repeats the data
+            parts.append(docx_inline(child[0],shapes,doc))#we read only node[0] because next node repeats the data
         else:
-            parts.append(docx_inline(child,shapes))
+            parts.append(docx_inline(child,shapes,doc))
     return "".join(parts)
+
+def docx_link(link,doc:DocxDocument)->str:
+    relation=doc.part.rels.get(link.get(qn("r:id")))#the address is kept here
+    if relation is None or not relation.is_external:
+        return ""
+    return relation.target_ref
 
 def docx_shape(shape,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
     blocks=[]
@@ -194,6 +203,41 @@ def read_slide_variants(path: Path)->str:
     ppt=pptx.Presentation(variants_to_main(path,PPTX_MAIN,SLIDE_VARIANTS))
     return pptx_to_text(ppt)
 
+def pptx_link(run,part)->str:
+    properties=run.find(pptx_qn("a:rPr"))
+    if properties is None:
+        return ""
+    link=properties.find(pptx_qn("a:hlinkClick"))
+    if link is None:
+        return ""
+    relation=part.rels.get(link.get(pptx_qn("r:id")))
+    if relation is None or not relation.is_external:#jump inside the pptx
+        return ""
+    return relation.target_ref
+    
+def pptx_paragraph_text(paragraph)->str:#it builds the paragraph by fixing \x0b characters and finding links
+    pieces=[]
+    for child in paragraph._p:
+        if child.tag==pptx_qn("a:br"):
+            pieces.append(["\n",""])
+            continue
+        if child.tag not in(pptx_qn("a:r"),pptx_qn("a:fld")):#no text
+            continue
+        text=""
+        for t in child.iter(pptx_qn("a:t")):
+            if t.text is not None:
+                text=text+t.text
+        address=pptx_link(child,paragraph.part)
+        if pieces and address and pieces[-1][1]==address:
+            pieces[-1][0]+=text
+        else:
+            pieces.append([text,address])
+    parts=[]
+    for text,address in pieces:
+        parts.append(with_address(text,address))
+    return "".join(parts)
+
+
 def pptx_to_text(ppt: PptxPresentation)->str:
     output=[]
     for i,slide in enumerate(ppt.slides):
@@ -225,7 +269,7 @@ def pptx_to_text(ppt: PptxPresentation)->str:
 def pptx_frame_text(frame)->str:
     paragraphs=[]
     for paragraph in frame.paragraphs:
-        text=clean_lines(paragraph.text.replace("\x0b","\n"))#python-pptx gives a line break as \x0b
+        text=clean_lines(pptx_paragraph_text(paragraph))
         if text:
             paragraphs.append(text)
     return "\n".join(paragraphs)
@@ -256,7 +300,7 @@ def format_shape(shape:BaseShape)->list[str]:
             for row in table.rows:
                 cells=[]
                 for cell in row.cells:
-                    cells.append(cell.text.replace("\x0b","\n"))
+                    cells.append(pptx_frame_text(cell.text_frame))
                 rows.append(cells)
             text=format_rows(fill_merged(rows,merges)).strip()
             if text:

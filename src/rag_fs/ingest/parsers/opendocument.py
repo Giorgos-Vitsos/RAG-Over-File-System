@@ -5,7 +5,7 @@ from odf import teletype
 from odf.opendocument import load, OpenDocument
 from odf.style import Style
 from .tabular import fill_merged, format_rows, format_sheets
-from .text import clean_lines
+from .text import clean_lines,with_address
 
 ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
 HEADING_NAME=re.compile(r"Heading_20_(\d+)")
@@ -122,6 +122,8 @@ def odf_inline(node,shapes:list)->str:
             parts.append("\n")
         elif tag.startswith("draw:"):
             shapes.append(child)
+        elif tag=="text:a":
+            parts.append(with_address(odf_inline(child,shapes),child.getAttribute("href") or ""))
         elif not is_skipped(tag):#wrappers are parsed recursivily
             parts.append(odf_inline(child,shapes))
     return "".join(parts)

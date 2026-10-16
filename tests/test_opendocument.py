@@ -380,7 +380,7 @@ ODT_CASES = {
     "links, spans and fields": (
         lambda: [para("Δες ", A(href="https://www.uoc.gr", type="simple", text="τον οδηγό"), ", το ",
                       Span(text="έντονο"), " κείμενο και την ", TextDate(text="11/10/2026"), ".")],
-        "Δες τον οδηγό, το έντονο κείμενο και την 11/10/2026."),
+        "Δες τον οδηγό (https://www.uoc.gr), το έντονο κείμενο και την 11/10/2026."),
     "soft page break inside a paragraph": (
         lambda: [para("Πρώτο μισό", SoftPageBreak(), " δεύτερο μισό")], "Πρώτο μισό δεύτερο μισό"),
     "soft page break between paragraphs": (lambda: [para("Α"), SoftPageBreak(), para("Β")], "Α\n\nΒ"),

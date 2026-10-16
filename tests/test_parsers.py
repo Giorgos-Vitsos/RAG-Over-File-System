@@ -11,16 +11,19 @@ import openpyxl
 import pandas as pd
 import pptx
 import pytest
+from docx.opc.constants import RELATIONSHIP_TYPE as DOCX_RT
 from docx.oxml import parse_xml
 from docx.shared import Inches
 from odf.draw import Frame, Page, TextBox as OdfTextBox
 from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
 from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableRow
-from odf.text import LineBreak as OdfLineBreak, P as OdfP
+from odf.text import A as OdfA, LineBreak as OdfLineBreak, P as OdfP, Span as OdfSpan
 from PIL import Image
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.shapes.autoshape import Shape as PptxShape
+from pptx.opc.constants import RELATIONSHIP_TYPE as PPTX_RT
+from pptx.oxml.ns import qn as pptx_qn
 from pptx.util import Inches as PptxInches
 
 from rag_fs.config import CorpusConfig
@@ -171,6 +174,9 @@ def test_parse_file_reads_upper_case_extensions(tmp_path):
 
 
 # one read_text case: the text written in the given encoding
+STEP_5 = pytest.mark.xfail(strict=True, reason="step 5: read_text does not fix these yet")
+
+
 def encoded(text, encoding, marks=()):
     return pytest.param(text.encode(encoding), text, marks=marks, id=f"{encoding}: {text[:25]}")
 
@@ -199,6 +205,12 @@ MIXED_GREEK_ENGLISH = [
     encoded("Άνοιξη στην Ήπειρο, Ώρα για Ύδρα.", "iso8859_7",
             marks=pytest.mark.xfail(strict=True, reason="L28: read as cp1253, so Ά becomes ¶")),
     *[encoded(text, enc) for text in MIXED_GREEK_ENGLISH for enc in ("utf-8", "cp1253", "iso8859_7")],
+    encoded("Πήγα στην Άρτα και μετά στην Αθήνα με τα παιδιά μου.", "iso8859_7", marks=STEP_5),
+    encoded("Παράγραφος ¶ 3 του κανονισμού σπουδών.", "cp1253"),
+    pytest.param("¶Ενότητα 3".encode(), "¶Ενότητα 3", id="utf-8 with a pilcrow before greek"),
+    pytest.param("αβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\ufffd", marks=STEP_5,
+                 id="utf-8 with one bad byte in ten greek letters"),
+    pytest.param(b"Hello \x93world\x94", "Hello \u201cworld\u201d", id="english with windows quotes"),
     pytest.param("\ufeffΓεια σου".encode("utf-8"), "Γεια σου", id="BOM removed"),
     pytest.param(b"", "", id="empty file"),
     pytest.param(b"a\r\nb", "a\r\nb", id="line endings kept (parse_file normalizes them)"),
@@ -1438,3 +1450,123 @@ def test_read_pptx_empty_paragraphs_are_dropped(tmp_path):
     p.save(str(f))
 
     assert read_pptx(f) == "# Slide 1\n\nα\nβ\n\nNotes: γ\nδ"
+
+
+# ---- links keep their address (D50): the same text in docx, odt, pptx and odp ----
+# a paragraph is a list of plain strings and links (pieces of the link text, address); "#..." is a place in the same file
+def links_docx(parts, f):
+    d = docx.Document()
+    p = d.add_paragraph()
+    for part in parts:
+        if isinstance(part, str):
+            p.add_run(part)
+            continue
+        pieces, url = part
+        runs = "".join(f'<w:r><w:t xml:space="preserve">{piece}</w:t></w:r>' for piece in pieces)
+        if url.startswith("#"):
+            target = f'w:anchor="{url[1:]}"'
+        else:
+            target = f'r:id="{d.part.relate_to(url, DOCX_RT.HYPERLINK, is_external=True)}"'
+        p._p.append(parse_xml(f'<w:hyperlink xmlns:w="{W_NS}" xmlns:r="{R_NS}" {target}>{runs}</w:hyperlink>'))
+    d.save(str(f))
+    return read_docx(f)
+
+
+def odf_link_paragraph(parts):
+    p = OdfP()
+    for part in parts:
+        if isinstance(part, str):
+            p.addText(part)
+            continue
+        pieces, url = part
+        link = OdfA(href=url, type="simple")
+        for piece in pieces:
+            link.addElement(OdfSpan(text=piece))
+        p.addElement(link)
+    return p
+
+
+def links_odt(parts, f):
+    doc = OpenDocumentText()
+    doc.text.addElement(odf_link_paragraph(parts))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(f))
+    return read_odf(f)
+
+
+def links_pptx(parts, f):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    target = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    paragraph = slide.shapes.add_textbox(PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(1)).text_frame.paragraphs[0]
+    for part in parts:
+        if isinstance(part, str):
+            paragraph.add_run().text = part
+            continue
+        pieces, url = part
+        for piece in pieces:
+            run = paragraph.add_run()
+            run.text = piece
+            run.hyperlink.address = "https://placeholder" if url.startswith("#") else url
+            if url.startswith("#"):  # a jump to another slide
+                link = run._r.find(pptx_qn("a:rPr")).find(pptx_qn("a:hlinkClick"))
+                link.set(pptx_qn("r:id"), slide.part.relate_to(target.part, PPTX_RT.SLIDE))
+                link.set("action", "ppaction://hlinksldjump")
+    p.save(str(f))
+    return read_pptx(f).removeprefix("# Slide 1\n\n").removesuffix("\n\n# Slide 2")
+
+
+def links_odp(parts, f):
+    doc = OpenDocumentPresentation()
+    frame = Frame()
+    box = OdfTextBox()
+    box.addElement(odf_link_paragraph(parts))
+    frame.addElement(box)
+    page = Page(masterpagename="Default")
+    page.addElement(frame)
+    doc.presentation.addElement(page)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.save(str(f))
+    return read_odf(f).removeprefix("# Slide 1\n\n")
+
+
+R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+LINK_FORMATS = {"docx": links_docx, "odt": links_odt, "pptx": links_pptx, "odp": links_odp}
+LINK_CASES = {
+    "text is not the address": (["Δες τον ", (["οδηγό"], "https://x.gr/guide"), " για λεπτομέρειες."],
+                                "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "text is the address": ([(["https://elearn.uoc.gr"], "https://elearn.uoc.gr/")], "https://elearn.uoc.gr"),
+    "address without http and www": ([(["csd.uoc.gr"], "http://www.csd.uoc.gr/")], "csd.uoc.gr"),
+    "email shown as the address": ([(["maria@uoc.gr"], "mailto:maria@uoc.gr")], "maria@uoc.gr"),
+    "email behind a name": (["Γράψε στη ", (["Μαρία"], "mailto:maria@uoc.gr")], "Γράψε στη Μαρία (mailto:maria@uoc.gr)"),
+    "link to a place in the same file": (["Δες την ", (["Εισαγωγή"], "#intro")], "Δες την Εισαγωγή"),
+    "space at the end of the link text": ([(["εδώ "], "https://x.gr"), "για"], "εδώ (https://x.gr) για"),
+    "address written in capitals": ([(["ELEARN.UOC.GR"], "https://elearn.uoc.gr/")], "ELEARN.UOC.GR"),
+    "link without text": (["Κείμενο", ([""], "https://x.gr")], "Κείμενο"),
+    "space at the start of the link text": (["Δες τον", ([" οδηγό"], "https://x.gr/guide"), " για"],
+                                            "Δες τον οδηγό (https://x.gr/guide) για"),
+    "link text in two pieces": ([(["οδη", "γό"], "https://x.gr/guide")], "οδηγό (https://x.gr/guide)"),
+    "two different links": ([(["α"], "https://a.gr"), " και ", (["β"], "https://b.gr")],
+                            "α (https://a.gr) και β (https://b.gr)"),
+}
+
+
+# the address of a link is kept after its text, unless the text already is the address or it is inside the file
+@pytest.mark.parametrize("fmt, case", [pytest.param(fmt, case, id=f"{fmt}, {case}")
+                                       for fmt, case in itertools.product(LINK_FORMATS, LINK_CASES)])
+def test_links_in_every_format(tmp_path, fmt, case):
+    parts, expected = LINK_CASES[case]
+    assert LINK_FORMATS[fmt](parts, tmp_path / f"links.{fmt}") == expected
+
+
+# a field (like the slide number) is text of the paragraph
+def test_read_pptx_field_in_a_paragraph(tmp_path):
+    p = pptx.Presentation()
+    paragraph = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK]).shapes.add_textbox(
+        PptxInches(1), PptxInches(1), PptxInches(4), PptxInches(1)).text_frame.paragraphs[0]
+    paragraph.add_run().text = "Διαφάνεια "
+    paragraph._p.append(parse_xml(
+        '<a:fld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" id="{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}"'
+        ' type="slidenum"><a:t>1</a:t></a:fld>'))
+    f = tmp_path / "field.pptx"
+    p.save(str(f))
+
+    assert read_pptx(f) == "# Slide 1\n\nΔιαφάνεια 1"
