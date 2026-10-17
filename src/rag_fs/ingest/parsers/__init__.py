@@ -5,6 +5,7 @@ from .tabular import read_csv,read_xlsx,read_xls
 from .office import read_docx,read_word_variants,read_pptx,read_slide_variants,read_rtf
 from .opendocument import read_ods,read_odf
 import logging
+from .markdown import read_markdown
 
 log = logging.getLogger(__name__)
 CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs",".sh",".sql",".r",".m",".php",".rb",".kt",".swift"}
@@ -14,8 +15,6 @@ BINARY_EXT={".zip", ".gz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".bin",
 
 PARSERS={
     ".txt": read_text,
-    ".md": read_text,
-    ".markdown": read_text,
     ".tex": read_text,
     ".bib": read_text,
     ".srt": read_text,
@@ -43,7 +42,9 @@ PARSERS={
     ".odt": read_odf,
     ".ott": read_odf,
     ".odp": read_odf,
-    ".otp": read_odf
+    ".otp": read_odf,
+    ".md": read_markdown,
+    ".markdown": read_markdown
 }
 
 for ext in CODE_EXT:

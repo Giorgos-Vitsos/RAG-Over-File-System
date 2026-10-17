@@ -12,10 +12,10 @@ dependencies = [
     "python-pptx",               
     "openpyxl",
     "odfpy",
-    "pandas",
     "striprtf",
     "ebooklib",
     "beautifulsoup4",
+    "markdown-it-py",
     "lxml",
     "pytesseract",
     "Pillow",
@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]     # optional groups: pip install -e ".[research]"
 research = [ "scipy","statsmodels","ragas" ]
-dev = [ "pytest","pyright" ]
+dev = [ "pytest","pyright","pandas" ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
