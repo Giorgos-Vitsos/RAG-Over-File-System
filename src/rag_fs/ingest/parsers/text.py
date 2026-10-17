@@ -1,17 +1,29 @@
 from pathlib import Path
 from charset_normalizer import from_bytes
+import re
 
 FALLBACK_ENCODINGS=["cp1253", "iso8859_7", "cp1252", "latin_1", "utf_16"]
+VALID_THRESHOLD=10
+GREEK_AFTER_PILCROW=re.compile("\u00b6[\u0370-\u03ff]")
 
 def read_text(path: Path)->str:
     data=path.read_bytes()
     try:
-        text=data.decode("utf-8-sig")#tries with utf-8 encoding then tries the most common in Greece
+        text=data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        best=from_bytes(data,cp_isolation=FALLBACK_ENCODINGS).best()#finds which one mathes the most
-        if best is None:
-            raise ValueError(f"{path} is not a text file")
-        text=str(best)
+        text=data.decode("utf-8-sig",errors="replace")#we replace the broken bytes
+        broken_count=text.count("\ufffd")
+        correct_count=0
+        for c in text:
+            if ord(c)>127 and c!="\ufffd": #above 127 we have the weird characters in ascii like greek etc.
+                correct_count+=1
+        if correct_count<VALID_THRESHOLD*broken_count:#if most characters are correct then thats probably the corrent encoding
+            best=from_bytes(data,cp_isolation=FALLBACK_ENCODINGS).best()#tries the most common encodings in Greece
+            if best is None:
+                raise ValueError(f"{path} is not a text file")
+            text=str(best)
+            if best.encoding=="cp1253" and GREEK_AFTER_PILCROW.search(text):#edge case where ¶ was replacing capital Α
+                text=data.decode("iso8859_7",errors="replace")
     if "\x00" in text:#we check for NULL byte
         raise ValueError(f"{path} is not a text file")
     return text

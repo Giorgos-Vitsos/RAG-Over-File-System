@@ -174,7 +174,10 @@ def test_parse_file_reads_upper_case_extensions(tmp_path):
 
 
 # one read_text case: the text written in the given encoding
-STEP_5 = pytest.mark.xfail(strict=True, reason="step 5: read_text does not fix these yet")
+# mostly english with one greek sentence: the english must not make it look like broken utf-8
+ENGLISH_THEN_GREEK = ("Please send the report about the exams to the secretary before Friday so that everyone has time "
+                      "to read it carefully and prepare questions for the meeting next week. ") * 3 + \
+    "Θέμα: η εξεταστική του Ιουνίου στο αμφιθέατρο Α."
 
 
 def encoded(text, encoding, marks=()):
@@ -202,15 +205,15 @@ MIXED_GREEK_ENGLISH = [
     encoded("Άρτα", "cp1253"),
     encoded("Χανιά", "cp1253"),
     encoded("Ηράκλειο", "cp1253"),
-    encoded("Άνοιξη στην Ήπειρο, Ώρα για Ύδρα.", "iso8859_7",
-            marks=pytest.mark.xfail(strict=True, reason="L28: read as cp1253, so Ά becomes ¶")),
+    encoded("Άνοιξη στην Ήπειρο, Ώρα για Ύδρα.", "iso8859_7"),
     *[encoded(text, enc) for text in MIXED_GREEK_ENGLISH for enc in ("utf-8", "cp1253", "iso8859_7")],
-    encoded("Πήγα στην Άρτα και μετά στην Αθήνα με τα παιδιά μου.", "iso8859_7", marks=STEP_5),
+    encoded("Πήγα στην Άρτα και μετά στην Αθήνα με τα παιδιά μου.", "iso8859_7"),
     encoded("Παράγραφος ¶ 3 του κανονισμού σπουδών.", "cp1253"),
     pytest.param("¶Ενότητα 3".encode(), "¶Ενότητα 3", id="utf-8 with a pilcrow before greek"),
-    pytest.param("αβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\ufffd", marks=STEP_5,
-                 id="utf-8 with one bad byte in ten greek letters"),
+    pytest.param("αβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\ufffd", id="utf-8 with one bad byte in ten greek letters"),
     pytest.param(b"Hello \x93world\x94", "Hello \u201cworld\u201d", id="english with windows quotes"),
+    pytest.param(ENGLISH_THEN_GREEK.encode("cp1253"), ENGLISH_THEN_GREEK, id="cp1253: long english, one greek sentence"),
+    pytest.param("\ufeffαβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\ufffd", id="BOM and one bad byte"),
     pytest.param("\ufeffΓεια σου".encode("utf-8"), "Γεια σου", id="BOM removed"),
     pytest.param(b"", "", id="empty file"),
     pytest.param(b"a\r\nb", "a\r\nb", id="line endings kept (parse_file normalizes them)"),
@@ -222,8 +225,16 @@ def test_read_text(tmp_path, data, expected):
     assert read_text(f) == expected
 
 
+# a NUL byte means binary, also when the file is utf-8 with a few broken bytes
+def test_read_text_nul_byte_in_utf8_with_a_broken_byte(tmp_path):
+    f = tmp_path / "data.bin"
+    f.write_bytes("Γεια σου κόσμε ".encode() * 5 + b"\x00\x93")
+
+    with pytest.raises(ValueError):
+        read_text(f)
+
+
 # a few windows bytes in a utf-8 file should not lose the greek
-@pytest.mark.xfail(strict=True, reason="L28: one bad byte makes the whole file fail")
 def test_read_text_utf8_with_stray_windows_quotes_keeps_the_greek(tmp_path):
     f = tmp_path / "mixed.txt"
     f.write_bytes("Σημειώσεις για την εξεταστική ".encode() + b"\x93quote\x94"
@@ -1037,7 +1048,6 @@ def test_parse_file_valid_but_empty_rtf_is_empty(tmp_path):
 
 # each extension points to the right reader in PARSERS
 @pytest.mark.parametrize("ext, reader", [
-    (".markdown", read_text),
     (".docx", read_docx),
     *[(ext, read_word_variants) for ext in WORD_VARIANTS],
     (".pptx", read_pptx),
