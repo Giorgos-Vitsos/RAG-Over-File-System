@@ -8,7 +8,9 @@ import logging
 from .markdown import read_markdown
 
 log = logging.getLogger(__name__)
-CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs",".sh",".sql",".r",".m",".php",".rb",".kt",".swift"}
+CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs",".sh",".sql",".r",".m",".php",".rb",".kt",".swift",
+          ".hpp",".hh",".hxx",".cc",".cxx",".inl",".hlsl",".glsl",".shader",".cginc",".compute",".frag",".vert",
+          ".y",".l",".asm",".s",".cmake",".bat",".cmd",".ps1",".lua",".pl",".scala",".kts",".mm"}
 TABULAR_EXT={".csv",".tsv",".xlsx",".xls",".ods"}
 BINARY_EXT={".zip", ".gz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".bin", ".iso", ".mp3", ".wav", ".flac", ".mp4", ".mkv", 
             ".avi", ".mov", ".ttf",".woff", ".pyc", ".class", ".jar", ".o", ".db", ".sqlite"}

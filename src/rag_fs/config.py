@@ -6,10 +6,25 @@ import yaml
 class CorpusConfig:
     roots: list[Path] = field(default_factory=list)
     ignore_dirs: list[str] = field(default_factory=lambda: [
-        ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules",".pytest_cache",".mypy_cache","*.egg-info"
+        ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules",".pytest_cache",".mypy_cache","*.egg-info",
+        "__MACOSX", ".ipynb_checkpoints", ".idea", ".vscode", ".vs", ".settings", ".metadata", ".gradle", "cmake-build-*"
     ])
     ignore_globs: list[str] = field(default_factory=lambda: [
-        "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*"
+        "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*",
+        "desktop.ini", "Thumbs.db", ".DS_Store", "~$*", "._*"
+    ])
+    ignore_dirs_with: dict[str, list[str]] = field(default_factory=lambda: {#we ignore these dirs only if they are generated with these files
+        "Library": ["ArtifactDB", "PackageCache"],
+        "Builds": ["UnityPlayer.dll", "*.apk"],
+        "UserSettings": ["EditorUserSettings.asset"],
+        "Temp": ["UnityLockfile"],
+        "build": ["CMakeCache.txt", "build.ninja", "*.class", "*.o", "*.obj"],
+        "out": ["*.class", "*.o", "*.obj"],
+        "bin": ["*.class", "*.o", "*.obj", "*.pdb"],
+        "obj": ["*.o", "*.obj", "project.assets.json"],
+    })
+    ignore_sidecars: list[str] = field(default_factory=lambda: [#we ignore those files only if the original exists
+        "*.meta"
     ])
     max_file_size_mb: int = 50
     follow_symlinks: bool = False

@@ -106,6 +106,19 @@ def test_parse_file_status_type_and_text(docs, name, status, content_type, text)
         assert doc.raw_text == text
 
 
+# more code extensions: c++ headers, shaders, yacc/lex, assembly, build and shell scripts, other languages
+@pytest.mark.parametrize("name", [
+    "vec.hpp", "vec.hh", "vec.hxx", "vec.cc", "vec.cxx", "vec.inl",
+    "light.hlsl", "light.glsl", "light.shader", "light.cginc", "light.compute", "light.frag", "light.vert",
+    "parser.y", "lexer.l", "boot.asm", "start.s", "tools.cmake",
+    "run.bat", "run.cmd", "run.ps1", "init.lua", "tool.pl", "Main.scala", "build.kts", "view.mm",
+])
+def test_more_code_extensions(tmp_path, name):
+    doc = parse_one(tmp_path, name, b"int x = 1;\n")
+    assert doc.content_type == "code"
+    assert doc.raw_text == "int x = 1;\n"
+
+
 # a file with no extension (Makefile) gets ext ""
 def test_file_without_extension_has_an_empty_ext(docs):
     assert docs["Makefile"].ext == ""

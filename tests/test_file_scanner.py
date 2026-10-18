@@ -168,3 +168,103 @@ def test_followed_symlink_outside_root_is_skipped(tmp_path):
 
     assert ("secret.txt", "outside_root") in ignored(result)
     assert found(result) == ["a.txt"]
+
+
+
+# (path in the corpus, what the scan does with it: "kept" or the reason of the first ignored part of the path)
+LAYOUT = {
+    # folders made by tools, found by a file inside them
+    "game/Library/ArtifactDB": "generated_dir",
+    "game/Builds/v1/UnityPlayer.dll": "generated_dir",
+    "game/UserSettings/EditorUserSettings.asset": "generated_dir",
+    "game/Temp/UnityLockfile": "generated_dir",
+    "game2/Library/PackageCache/com.unity/package.json": "generated_dir",
+    "ray/build.meta": "sidecar_file",
+    "ray/build/CMakeCache.txt": "generated_dir",
+    "ray/build2/CMakeFiles/a.txt": "kept",
+    "cards/bin/Model/Card.class": "generated_dir",
+    "cards/out/production/app/Main.class": "generated_dir",
+    "app/obj/main.o": "generated_dir",
+    # the same names with real files inside
+    "course/Library/tutorial.pdf": "kept",
+    "compiler/out/phase2.txt": "kept",
+    "notes/build/plan.txt": "kept",
+    "scripts/bin/run.sh": "kept",
+    # tool folders, by name
+    "ray/cmake-build-debug/a.txt": "ignored_dir",
+    "zip/__MACOSX/a.py": "ignored_dir",
+    "lab/.ipynb_checkpoints/hw-checkpoint.ipynb": "ignored_dir",
+    "java/.idea/misc.xml": "ignored_dir",
+    "java/.vscode/settings.json": "ignored_dir",
+    "java/.settings/org.eclipse.jdt.core.prefs": "ignored_dir",
+    "eclipse/.metadata/version.ini": "ignored_dir",
+    # unity .meta next to the file or folder it describes
+    "game/Assets/Player.cs": "kept",
+    "game/Assets/Player.cs.meta": "sidecar_file",
+    "game/Assets.meta": "sidecar_file",
+    "game/Assets/notes.meta": "kept",
+    "game/Assets/.meta": "kept",
+    # junk files of the system and of office
+    "docs/desktop.ini": "ignored_file",
+    "docs/Thumbs.db": "ignored_file",
+    "docs/.DS_Store": "ignored_file",
+    "docs/~$report.docx": "ignored_file",
+    "docs/._report.docx": "ignored_file",
+    "docs/report.docx": "kept",
+}
+
+
+# writes every path of LAYOUT and scans the folder
+@pytest.fixture
+def layout(tmp_path):
+    root = tmp_path / "corpus"
+    for rel in LAYOUT:
+        f = root / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x")
+    return root, scan(CorpusConfig(roots=[root]))
+
+
+# "kept", or the reason of the ignored entry that is the path or one of its folders
+def what_happened(root, result, rel):
+    target = root / rel
+    for path, reason in result.ignored:
+        if path == target or path in target.parents:
+            return reason
+    if any(f.abs_path == target for f in result.files):
+        return "kept"
+    return "missing"
+
+
+# every path ends up kept or ignored for the right reason
+@pytest.mark.parametrize("rel, expected", LAYOUT.items(), ids=LAYOUT.keys())
+def test_ignore_rules(layout, rel, expected):
+    root, result = layout
+    assert what_happened(root, result, rel) == expected
+
+
+# a generated folder is skipped as a whole, nothing inside it is listed
+def test_does_not_enter_generated_dirs(layout):
+    root, result = layout
+    inside = [f for f in result.files if root / "game/Library" in f.abs_path.parents]
+    assert inside == []
+    assert [reason for path, reason in result.ignored if path == root / "game/Library"] == ["generated_dir"]
+
+
+# the rules come from the config: without them the same folders are kept
+def test_ignore_rules_can_be_turned_off(layout, tmp_path):
+    root, _ = layout
+    result = scan(CorpusConfig(roots=[root], ignore_dirs_with={}, ignore_sidecars=[]))
+    for rel in ["game/Library/ArtifactDB", "cards/bin/Model/Card.class", "game/Assets/Player.cs.meta"]:
+        assert what_happened(root, result, rel) == "kept"
+
+
+# when two rules match the same folder name, a rule without a marker inside does not stop the next one
+def test_every_matching_rule_is_tried(tmp_path):
+    root = tmp_path / "corpus"
+    (root / "game/Library").mkdir(parents=True)
+    (root / "game/Library/ArtifactDB").write_text("x")
+
+    result = scan(CorpusConfig(roots=[root], ignore_dirs_with={"Lib*": ["nothing"], "Library": ["ArtifactDB"]}))
+
+    assert what_happened(root, result, "game/Library/ArtifactDB") == "generated_dir"

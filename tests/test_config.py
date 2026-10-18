@@ -86,3 +86,14 @@ def test_unknown_group_raises_error(tmp_path):
 
     with pytest.raises(ValueError):
         load_config(yaml_file)
+
+
+# the ignore rules with markers and the sidecar patterns can be set in the yaml
+def test_ignore_rules_from_yaml(tmp_path):
+    yaml_file = tmp_path / "rules.yaml"
+    yaml_file.write_text('corpus:\n  ignore_dirs_with:\n    dist: ["*.whl"]\n  ignore_sidecars: []\n')
+
+    config = load_config(yaml_file)
+
+    assert config.corpus.ignore_dirs_with == {"dist": ["*.whl"]}
+    assert config.corpus.ignore_sidecars == []

@@ -46,10 +46,13 @@ def scan(corpus: CorpusConfig)->ScannerResult:
             if(matches(part,corpus.ignore_dirs)):
                 raise ValueError(f"Corpus root: {root} is not allowed, part: {part} is in the ignore list. Check your settings")
         for dirpath,dirnames,filenames in os.walk(root,followlinks=corpus.follow_symlinks):
+            siblings=set(filenames)|set(dirnames)
             keep=[]
             for d in dirnames: #for every dir insdie the current dir
                 if matches(d,corpus.ignore_dirs):
                     result.ignored.append((Path(dirpath)/d,"ignored_dir"))
+                elif is_generated(Path(dirpath)/d,corpus.ignore_dirs_with):
+                    result.ignored.append((Path(dirpath)/d,"generated_dir"))
                 else:
                     keep.append(d)
             dirnames[:]=sorted(keep)#we want next loop to be only inside the allowed dirs
@@ -57,6 +60,9 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                 path=Path(dirpath) / name
                 if matches(name,corpus.ignore_globs):
                     result.ignored.append((path,"ignored_file"))
+                    continue
+                if is_sidecar(name,siblings,corpus.ignore_sidecars):
+                    result.ignored.append((path,"sidecar_file"))
                     continue
                 if(path.is_symlink() and not corpus.follow_symlinks):
                     result.ignored.append((path,"ignored_symlink"))
@@ -78,12 +84,26 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                 result.files.append(ScannedFile(root_id,path,rel_path,info.st_size,info.st_mtime,file_hash))
     return result
 
-
 def matches(name: str,patterns: list[str])->bool:
     for pattern in patterns:
         if fnmatch.fnmatch(name,pattern): return True
     return False
 
+def is_generated(path: Path,rules: dict[str,list[str]])->bool:
+    for dirname,markers in rules.items():
+        if not matches(path.name,[dirname]):#if it doesnt match the dirname no reason to test
+            continue
+        for _,dirnames,filenames in os.walk(path):
+            for name in dirnames+filenames:#for every dir/file in the path
+                if matches(name,markers):#if we find a marker then its probably generated
+                    return True
+    return False
+
+def is_sidecar(name:str,siblings: set[str],patterns: list[str])->bool:
+    if not matches(name,patterns):
+        return False
+    main=os.path.splitext(name)[0]#we split from the name the file type and we only keep the name
+    return name!=main and main in siblings
 
 def count_by_extension(result: ScannerResult)->Counter:
     file_count=Counter()
