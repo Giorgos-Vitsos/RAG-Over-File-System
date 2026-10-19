@@ -20,7 +20,7 @@ def read_pdf(path:Path)->str:
             for block in page.get_text("blocks"):
                 if block[6]==0:#block[6] is the type and 0 is text
                     blocks.append((block[1],block[3],block[4]))#block[1] is top,block[3] is bottom and block[4] is the text
-            pages.append(blocks)
+            pages.append((page.rect.height, blocks))
         slides=is_slides(file)
     pages=drop_headers(pages)#we remove the noise data
     words=get_words(pages)

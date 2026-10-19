@@ -111,7 +111,6 @@ def test_parse_file_pdf_with_password_fails(tmp_path):
     assert parse_one(tmp_path, "secret.pdf", data).parse_status == "failed"
 
 
-STEP_P2 = pytest.mark.xfail(strict=True, reason="step P2: headers and footers are kept")
 
 
 # a pdf whose pages have a body in the middle and, if given, a header at the top and a footer at the bottom
@@ -139,7 +138,7 @@ EDGE_CASES = {
     "header on every page": (THREE, ["<p>ΗΥ-340 Μεταφραστές</p>"] * 3, None, "Α\n\nΒ\n\nΓ"),
     "header and footer": (THREE, ["<p>ΗΥ-340</p>"] * 3, ["<p>- {n} -</p>"] * 3, "Α\n\nΒ\n\nΓ"),
     "spaces and capitals do not matter": (
-        THREE, ["<p>ΗΥ-340 Μεταφραστές</p>", "<p>ΗΥ-340  Μεταφραστές</p>", "<p>ηυ-340 μεταφραστές</p>"], None,
+        THREE, ["<p>ΗΥ-340 Μεταφραστές</p>", "<p>ΗΥ-340&nbsp; Μεταφραστές</p>", "<p>ηυ-340 μεταφραστές</p>"], None,
         "Α\n\nΒ\n\nΓ"),
     "footer on half of the pages": (
         THREE + ["<p>Δ</p>"], None, ["<p>Πρόχειρο</p>", None, "<p>Πρόχειρο</p>", None], "Α\n\nΒ\n\nΓ\n\nΔ"),
@@ -152,7 +151,6 @@ EDGE_CASES = {
 
 
 # repeated text at the top or bottom of the pages is removed
-@STEP_P2
 @pytest.mark.parametrize("bodies, headers, footers, expected", EDGE_CASES.values(), ids=EDGE_CASES.keys())
 def test_headers_and_footers_are_removed(tmp_path, bodies, headers, footers, expected):
     assert edges_pdf(tmp_path, bodies, headers, footers) == expected
@@ -177,7 +175,121 @@ def test_text_that_is_not_a_header_stays(tmp_path, bodies, headers, footers, exp
 
 
 # slides lose their repeated footer too, and keep their numbers
-@STEP_P2
 def test_slides_lose_their_footer(tmp_path):
     text = edges_pdf(tmp_path, ["<p>Α</p>", "", "<p>Γ</p>"], None, ["<p>ΗΥ-358 Γραφικά {n}</p>"] * 3, LANDSCAPE)
     assert text == "# Slide 1\n\nΑ\n\n# Slide 2\n\n# Slide 3\n\nΓ"
+
+
+# a pdf of 3 portrait pages, each with the same blocks: (top, bottom) as parts of the page height, and html
+def placed_pdf(tmp_path, blocks):
+    w, h = PORTRAIT
+    doc = pymupdf.open()
+    for _ in range(3):
+        page = doc.new_page(width=w, height=h)
+        for top, bottom, html in blocks:
+            page.insert_htmlbox(pymupdf.Rect(50, top * h, w - 50, bottom * h), html)
+    f = tmp_path / "placed.pdf"
+    doc.save(f)
+    return read_pdf(f)
+
+
+# only blocks that are whole inside the top or bottom 12% can be headers
+@pytest.mark.parametrize("top, bottom, html, kept", [
+    (0.03, 0.40, "<p>" + "Οδηγίες για όλες τις ασκήσεις του μαθήματος. " * 12 + "</p>", True),  # starts at the top, reaches the middle
+    (0.20, 0.25, "<p>Άσκηση</p>", True),                                                    # repeated, but below the top 12%
+    (0.03, 0.08, "<p>Άσκηση</p>", False),                                                   # repeated inside the top 12%
+])
+def test_only_blocks_inside_the_edges_are_headers(tmp_path, top, bottom, html, kept):
+    text = placed_pdf(tmp_path, [(top, bottom, html), (0.5, 0.6, "<p>Σώμα.</p>")])
+    assert (text.count("Σώμα.") == 3) and ((text.count("\n\n") == 5) == kept)
+
+
+STEP_P3 = pytest.mark.xfail(strict=True, reason="step P3: tables are read as plain text")
+CELL_W, CELL_H = 120, 22
+
+
+# draws a table with lines around every cell; cells are (row, col, rowspan, colspan, html)
+def draw_table(page, y, cells):
+    for r, c, rs, cs, html in cells:
+        rect = pymupdf.Rect(50 + c * CELL_W, y + r * CELL_H, 50 + (c + cs) * CELL_W, y + (r + rs) * CELL_H)
+        page.draw_rect(rect, color=(0, 0, 0), width=0.7)
+        if html:
+            page.insert_htmlbox(rect + (3, 3, -3, -3), f"<p>{html}</p>")
+
+
+# a simple table from rows of html, one cell per value
+def grid(rows):
+    return [(r, c, 1, 1, v) for r, row in enumerate(rows) for c, v in enumerate(row)]
+
+
+# a pdf whose pages hold text (y, html) and tables (y, cells), and its text
+def tables_pdf(tmp_path, pages, size=PORTRAIT):
+    doc = pymupdf.open()
+    for items in pages:
+        page = doc.new_page(width=size[0], height=size[1])
+        for y, thing in items:
+            if isinstance(thing, str):
+                page.insert_htmlbox(pymupdf.Rect(50, y, 500, y + 40), thing)
+            else:
+                draw_table(page, y, thing)
+    f = tmp_path / "tables.pdf"
+    doc.save(f)
+    return read_pdf(f)
+
+
+GRADES = grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"], ["Νίκος", "7"]])
+GRADES_TEXT = "Όνομα: Μαρία; Βαθμός: 9\nΌνομα: Νίκος; Βαθμός: 7"
+
+# (pages, text)
+TABLE_CASES = {
+    "table between text": (
+        [[(150, "<p>Πριν.</p>"), (250, GRADES), (400, "<p>Μετά.</p>")]],
+        "Πριν.\n\n" + GRADES_TEXT + "\n\nΜετά."),
+    "cell over two columns": (
+        [[(250, grid([["Όνομα", "Πρόοδος", "Τελικό"]]) + [(1, 0, 1, 1, "Μαρία"), (1, 1, 1, 2, "9")]
+          + [(2, 0, 1, 1, "Νίκος"), (2, 1, 1, 1, "7"), (2, 2, 1, 1, "8")])]],
+        "Όνομα: Μαρία; Πρόοδος: 9; Τελικό: 9\nΌνομα: Νίκος; Πρόοδος: 7; Τελικό: 8"),
+    "cell over two rows": (
+        [[(250, grid([["Μάθημα", "Φοιτητής"]]) + [(1, 0, 2, 1, "ΗΥ-340"), (1, 1, 1, 1, "Μαρία"), (2, 1, 1, 1, "Νίκος")])]],
+        "Μάθημα: ΗΥ-340; Φοιτητής: Μαρία\nΜάθημα: ΗΥ-340; Φοιτητής: Νίκος"),
+    "broken word in a cell is joined": (
+        [[(250, grid([["Όνομα", "Θέμα"], ["Μαρία", "πληρο-<br>φορία"], ["Νίκος", "δίκτυα"]]))]],
+        "Όνομα: Μαρία; Θέμα: πληροφορία\nΌνομα: Νίκος; Θέμα: δίκτυα"),
+    "table goes on in the next page": (
+        [[(150, "<p>Πριν.</p>"), (720, grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"]]))],
+         [(40, grid([["Νίκος", "7"]])), (200, "<p>Μετά.</p>")]],
+        "Πριν.\n\n" + GRADES_TEXT + "\n\nΜετά."),
+    "header repeated on the next page is dropped": (
+        [[(720, grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"]]))],
+         [(40, grid([["Όνομα", "Βαθμός"], ["Νίκος", "7"]]))]],
+        GRADES_TEXT),
+    "next page table with other columns is a new table": (
+        [[(720, GRADES)], [(40, grid([["Μάθημα", "Αίθουσα", "Ώρα"], ["ΗΥ-340", "Α1", "9"], ["ΗΥ-252", "Β2", "11"]]))]],
+        GRADES_TEXT + "\n\nΜάθημα: ΗΥ-340; Αίθουσα: Α1; Ώρα: 9\nΜάθημα: ΗΥ-252; Αίθουσα: Β2; Ώρα: 11"),
+    "table in the middle of a page does not go on": (
+        [[(300, GRADES)], [(40, grid([["Όνομα", "Βαθμός"], ["Ελένη", "8"]]))]],
+        GRADES_TEXT + "\n\nΌνομα: Ελένη; Βαθμός: 8"),
+}
+
+
+# tables become rows of "column: value", like docx and xlsx
+@STEP_P3
+@pytest.mark.parametrize("pages, expected", TABLE_CASES.values(), ids=TABLE_CASES.keys())
+def test_read_pdf_tables(tmp_path, pages, expected):
+    assert tables_pdf(tmp_path, pages) == expected
+
+
+# lines that are not a real table stay plain text
+@pytest.mark.parametrize("cells, expected", [
+    (grid([["Σημείωση", "Προσοχή"]]), "Σημείωση Προσοχή"),                     # a box of one row
+    (grid([["Α", "", ""], ["", "", ""], ["", "", "Β"]]), "Α\n\nΒ"),            # mostly empty
+], ids=["one row box", "mostly empty"])
+def test_lines_that_are_not_a_table_stay_text(tmp_path, cells, expected):
+    assert tables_pdf(tmp_path, [[(250, cells)]]) == expected
+
+
+# a table on a slide
+@STEP_P3
+def test_table_on_a_slide(tmp_path):
+    text = tables_pdf(tmp_path, [[(100, "<p>Βαθμοί</p>"), (200, GRADES)]], LANDSCAPE)
+    assert text == "# Slide 1\n\nΒαθμοί\n\n" + GRADES_TEXT
