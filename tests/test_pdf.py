@@ -109,3 +109,75 @@ def test_parse_file_pdf_with_password_fails(tmp_path):
     doc.new_page().insert_htmlbox(pymupdf.Rect(50, 50, 300, 400), "<p>Μυστικό.</p>")
     data = doc.tobytes(encryption=getattr(pymupdf, "PDF_ENCRYPT_AES_256"), user_pw="pw", owner_pw="pw")
     assert parse_one(tmp_path, "secret.pdf", data).parse_status == "failed"
+
+
+STEP_P2 = pytest.mark.xfail(strict=True, reason="step P2: headers and footers are kept")
+
+
+# a pdf whose pages have a body in the middle and, if given, a header at the top and a footer at the bottom
+# ({n} becomes the page number); None leaves that part out on that page
+def edges_pdf(tmp_path, bodies, headers=None, footers=None, size=PORTRAIT):
+    w, h = size
+    doc = pymupdf.open()
+    for i, body in enumerate(bodies):
+        page = doc.new_page(width=w, height=h)
+        page.insert_htmlbox(pymupdf.Rect(50, 0.3 * h, w - 50, 0.7 * h), body)
+        for texts, top in [(headers, 0.03 * h), (footers, 0.93 * h)]:
+            if texts and texts[i] is not None:
+                page.insert_htmlbox(pymupdf.Rect(50, top, w - 50, top + 0.05 * h), texts[i].format(n=i + 1))
+    f = tmp_path / "edges.pdf"
+    doc.save(f)
+    return read_pdf(f)
+
+
+THREE = ["<p>Α</p>", "<p>Β</p>", "<p>Γ</p>"]
+
+# (bodies, headers, footers, text)
+EDGE_CASES = {
+    "page x of y footer": (THREE, None, ["<p>Σελίδα {n} από 3</p>"] * 3, "Α\n\nΒ\n\nΓ"),
+    "page number alone": (THREE, None, ["<p>{n}</p>"] * 3, "Α\n\nΒ\n\nΓ"),
+    "header on every page": (THREE, ["<p>ΗΥ-340 Μεταφραστές</p>"] * 3, None, "Α\n\nΒ\n\nΓ"),
+    "header and footer": (THREE, ["<p>ΗΥ-340</p>"] * 3, ["<p>- {n} -</p>"] * 3, "Α\n\nΒ\n\nΓ"),
+    "spaces and capitals do not matter": (
+        THREE, ["<p>ΗΥ-340 Μεταφραστές</p>", "<p>ΗΥ-340  Μεταφραστές</p>", "<p>ηυ-340 μεταφραστές</p>"], None,
+        "Α\n\nΒ\n\nΓ"),
+    "footer on half of the pages": (
+        THREE + ["<p>Δ</p>"], None, ["<p>Πρόχειρο</p>", None, "<p>Πρόχειρο</p>", None], "Α\n\nΒ\n\nΓ\n\nΔ"),
+    "page with only a footer becomes empty": (
+        ["<p>Α</p>", "", "<p>Γ</p>"], None, ["<p>{n}</p>"] * 3, "Α\n\nΓ"),
+    "header text in the body is kept": (
+        ["<p>Το ΗΥ-340 είναι μάθημα.</p>", "<p>ΗΥ-340</p>", "<p>Γ</p>"], ["<p>ΗΥ-340</p>"] * 3, None,
+        "Το ΗΥ-340 είναι μάθημα.\n\nΗΥ-340\n\nΓ"),
+}
+
+
+# repeated text at the top or bottom of the pages is removed
+@STEP_P2
+@pytest.mark.parametrize("bodies, headers, footers, expected", EDGE_CASES.values(), ids=EDGE_CASES.keys())
+def test_headers_and_footers_are_removed(tmp_path, bodies, headers, footers, expected):
+    assert edges_pdf(tmp_path, bodies, headers, footers) == expected
+
+
+# (bodies, headers, footers, text); pymupdf gives the blocks in the order they were drawn: body, header, footer
+KEPT_CASES = {
+    "two pages are too few": (["<p>Α</p>", "<p>Β</p>"], None, ["<p>{n}</p>"] * 2, "Α\n\n1\n\nΒ\n\n2"),
+    "on one page out of four": (
+        THREE + ["<p>Δ</p>"], None, ["<p>Πρόχειρο</p>", None, None, None], "Α\n\nΠρόχειρο\n\nΒ\n\nΓ\n\nΔ"),
+    "different title on every page": (
+        THREE, ["<p>Εισαγωγή</p>", "<p>Μέθοδος</p>", "<p>Αποτελέσματα</p>"], None,
+        "Α\n\nΕισαγωγή\n\nΒ\n\nΜέθοδος\n\nΓ\n\nΑποτελέσματα"),
+    "the same text in the middle of the pages": (["<p>Άσκηση</p>"] * 3, None, None, "Άσκηση\n\nΆσκηση\n\nΆσκηση"),
+}
+
+
+# text at the edges that is not repeated on most pages, or repeated only in the body, stays
+@pytest.mark.parametrize("bodies, headers, footers, expected", KEPT_CASES.values(), ids=KEPT_CASES.keys())
+def test_text_that_is_not_a_header_stays(tmp_path, bodies, headers, footers, expected):
+    assert edges_pdf(tmp_path, bodies, headers, footers) == expected
+
+
+# slides lose their repeated footer too, and keep their numbers
+@STEP_P2
+def test_slides_lose_their_footer(tmp_path):
+    text = edges_pdf(tmp_path, ["<p>Α</p>", "", "<p>Γ</p>"], None, ["<p>ΗΥ-358 Γραφικά {n}</p>"] * 3, LANDSCAPE)
+    assert text == "# Slide 1\n\nΑ\n\n# Slide 2\n\n# Slide 3\n\nΓ"
