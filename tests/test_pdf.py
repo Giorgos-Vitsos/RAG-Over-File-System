@@ -204,7 +204,6 @@ def test_only_blocks_inside_the_edges_are_headers(tmp_path, top, bottom, html, k
     assert (text.count("Σώμα.") == 3) and ((text.count("\n\n") == 5) == kept)
 
 
-STEP_P3 = pytest.mark.xfail(strict=True, reason="step P3: tables are read as plain text")
 CELL_W, CELL_H = 120, 22
 
 
@@ -252,6 +251,11 @@ TABLE_CASES = {
     "cell over two rows": (
         [[(250, grid([["Μάθημα", "Φοιτητής"]]) + [(1, 0, 2, 1, "ΗΥ-340"), (1, 1, 1, 1, "Μαρία"), (2, 1, 1, 1, "Νίκος")])]],
         "Μάθημα: ΗΥ-340; Φοιτητής: Μαρία\nΜάθημα: ΗΥ-340; Φοιτητής: Νίκος"),
+    "header of two rows with merged cells": (
+        [[(250, [(0, 0, 2, 1, "Όνομα"), (0, 1, 1, 2, "Βαθμοί"), (1, 1, 1, 1, "Πρόοδος"), (1, 2, 1, 1, "Τελικό"),
+                 (2, 0, 1, 1, "Μαρία"), (2, 1, 1, 1, "9"), (2, 2, 1, 1, "8"),
+                 (3, 0, 1, 1, "Νίκος"), (3, 1, 1, 1, "7"), (3, 2, 1, 1, "6")])]],
+        "Όνομα | Βαθμοί | Βαθμοί\nΌνομα: Μαρία; Πρόοδος: 9; Τελικό: 8\nΌνομα: Νίκος; Πρόοδος: 7; Τελικό: 6"),
     "broken word in a cell is joined": (
         [[(250, grid([["Όνομα", "Θέμα"], ["Μαρία", "πληρο-<br>φορία"], ["Νίκος", "δίκτυα"]]))]],
         "Όνομα: Μαρία; Θέμα: πληροφορία\nΌνομα: Νίκος; Θέμα: δίκτυα"),
@@ -272,8 +276,50 @@ TABLE_CASES = {
 }
 
 
+FIRST = grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"]])
+NEXT = grid([["Όνομα", "Βαθμός"], ["Νίκος", "7"]])
+TWO_TABLES = "Όνομα: Μαρία; Βαθμός: 9\n\nΌνομα: Νίκος; Βαθμός: 7"
+
+# when a table does NOT go on in the next page: (pages, text)
+NOT_GOING_ON = {
+    "next table starts in the middle of the page": (
+        [[(720, FIRST)], [(150, "<p>Νέα ενότητα.</p>"), (300, NEXT)]],
+        "Όνομα: Μαρία; Βαθμός: 9\n\nΝέα ενότητα.\n\nΌνομα: Νίκος; Βαθμός: 7"),
+    "table ends at two thirds of the page": ([[(520, FIRST)], [(40, NEXT)]], TWO_TABLES),
+    "only the next page, not after a page with no table": (
+        [[(720, FIRST)], [(150, "<p>Κείμενο.</p>")], [(40, NEXT)]],
+        "Όνομα: Μαρία; Βαθμός: 9\n\nΚείμενο.\n\nΌνομα: Νίκος; Βαθμός: 7"),
+    "only the first table of a page can go on": (
+        [[(720, FIRST)], [(20, grid([["Μάθημα", "Αίθουσα", "Ώρα"], ["ΗΥ-340", "Α1", "9"]])), (80, NEXT)]],
+        "Όνομα: Μαρία; Βαθμός: 9\n\nΜάθημα: ΗΥ-340; Αίθουσα: Α1; Ώρα: 9\n\nΌνομα: Νίκος; Βαθμός: 7"),
+    "a piece that ends high stops the table": (
+        [[(720, FIRST)], [(40, grid([["Νίκος", "7"]]))], [(40, grid([["Όνομα", "Βαθμός"], ["Ελένη", "8"]]))]],
+        GRADES_TEXT + "\n\nΌνομα: Ελένη; Βαθμός: 8"),
+}
+
+
+# a table goes on only from the bottom of a page to the top of the very next one
+@pytest.mark.parametrize("pages, expected", NOT_GOING_ON.values(), ids=NOT_GOING_ON.keys())
+def test_tables_that_do_not_go_on(tmp_path, pages, expected):
+    assert tables_pdf(tmp_path, pages) == expected
+
+
+# tables at the top of every page are not headers, even when an empty block repeats at the bottom
+def test_tables_at_the_top_are_not_headers(tmp_path):
+    pages = [[(20, grid([["Όνομα", "Βαθμός"], [name, mark]])), (800, "<p>&nbsp;</p>")]
+             for name, mark in [("Μαρία", "9"), ("Νίκος", "7"), ("Ελένη", "8")]]
+    assert tables_pdf(tmp_path, pages) == (
+        "Όνομα: Μαρία; Βαθμός: 9\n\nΌνομα: Νίκος; Βαθμός: 7\n\nΌνομα: Ελένη; Βαθμός: 8")
+
+
+# a word written whole in a table decides a hyphen at a line end of the text
+def test_words_in_tables_count_for_broken_words(tmp_path):
+    text = tables_pdf(tmp_path, [[(150, "<p>Ένα well-<br>known θέμα.</p>"),
+                                  (300, grid([["Όρος", "Είδος"], ["well-known", "επίθετο"], ["θέμα", "ουσιαστικό"]]))]])
+    assert text == "Ένα well-known θέμα.\n\nΌρος: well-known; Είδος: επίθετο\nΌρος: θέμα; Είδος: ουσιαστικό"
+
+
 # tables become rows of "column: value", like docx and xlsx
-@STEP_P3
 @pytest.mark.parametrize("pages, expected", TABLE_CASES.values(), ids=TABLE_CASES.keys())
 def test_read_pdf_tables(tmp_path, pages, expected):
     assert tables_pdf(tmp_path, pages) == expected
@@ -283,13 +329,13 @@ def test_read_pdf_tables(tmp_path, pages, expected):
 @pytest.mark.parametrize("cells, expected", [
     (grid([["Σημείωση", "Προσοχή"]]), "Σημείωση Προσοχή"),                     # a box of one row
     (grid([["Α", "", ""], ["", "", ""], ["", "", "Β"]]), "Α\n\nΒ"),            # mostly empty
-], ids=["one row box", "mostly empty"])
+    (grid([["Α"], ["Β"], ["Γ"]]), "Α\n\nΒ\n\nΓ"),                            # one column
+], ids=["one row box", "mostly empty", "one column"])
 def test_lines_that_are_not_a_table_stay_text(tmp_path, cells, expected):
     assert tables_pdf(tmp_path, [[(250, cells)]]) == expected
 
 
 # a table on a slide
-@STEP_P3
 def test_table_on_a_slide(tmp_path):
     text = tables_pdf(tmp_path, [[(100, "<p>Βαθμοί</p>"), (200, GRADES)]], LANDSCAPE)
     assert text == "# Slide 1\n\nΒαθμοί\n\n" + GRADES_TEXT

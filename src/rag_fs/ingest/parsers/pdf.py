@@ -3,23 +3,38 @@ import unicodedata
 from pathlib import Path
 import pymupdf
 from collections import Counter
+from .tabular import format_rows
 
 LIGATURE=re.compile("[\ufb00-\ufb06]")#one character for two or three letters
 BROKEN_WORD=re.compile(r"(\w+)-\n(\w+)")#a word cut by a hyphen at the end of a line
 WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
 NUMBER=re.compile(r"\d+")
 EDGE=0.12#the top and bottom part of a page
+TABLE_START=0.15#if a table starts here it might be cut
+TABLE_END=0.85#if a table ends here it might be cut
 
 def read_pdf(path:Path)->str:
     with pymupdf.open(path) as file:
         if file.needs_pass:#if its password protected
             raise ValueError(f"The pdf {path} is password protected and cant be parsed")
         pages=[]
+        last=None
         for page in file:
+            tables,last=page_tables(page,last)
             blocks=[]
+            placed=set()
             for block in page.get_text("blocks"):
-                if block[6]==0:#block[6] is the type and 0 is text
-                    blocks.append((block[1],block[3],block[4]))#block[1] is top,block[3] is bottom and block[4] is the text
+                if block[6]!=0:#block[6] is the type and 0 is text
+                    continue
+                index=table_at(block,tables)
+                if index is None:#not a table
+                    blocks.append((block[1],block[3],block[4],None))
+                elif index not in placed:
+                    placed.add(index)
+                    blocks.append((block[1],block[3],"",tables[index][1]))
+            for index,(box,rows) in enumerate(tables):
+                if index not in placed:
+                    blocks.append((box[1],box[3],"",rows))
             pages.append((page.rect.height, blocks))
         slides=is_slides(file)
     pages=drop_headers(pages)#we remove the noise data
@@ -28,12 +43,20 @@ def read_pdf(path:Path)->str:
     for i,blocks in enumerate(pages):
         if slides:
             output.append(f"# Slide {i+1}")
-        for block in blocks:
-            text=pdf_text_block(block,words)
+        for text,rows in blocks:
+            if rows is None:
+                text=pdf_text_block(text,words)
+            else:
+                clean=[]
+                for row in rows:
+                    clean_row=[]
+                    for cell in row:
+                        clean_row.append(pdf_text_block(cell,words))
+                    clean.append(clean_row)
+                text=format_rows(clean)
             if text:
                 output.append(text)
     return "\n\n".join(output)
-
 
 def is_slides(file)->bool:
     landscape_counter=0
@@ -44,13 +67,21 @@ def is_slides(file)->bool:
         return True
     return False
 
-def get_words(pages: list[list[str]])->set[str]:#it returns all words other than "-\n" connected
+def get_words(pages:  list[list[tuple[str,list[list[str]]|None]]])->set[str]:#it returns all words other than "-\n" connected
     words=set()
     for blocks in pages:
-        for block in blocks:
-            whole=BROKEN_WORD.sub(" ",block)
-            for word in WORD.findall(whole):
-                words.add(word.lower())
+        for text,rows in blocks:
+            if rows is None:
+                parts=[text]
+            else:
+                parts=[]
+                for row in rows:
+                    for cell in row:
+                        parts.append(cell)
+            for part in parts:
+                whole=BROKEN_WORD.sub(" ",part)
+                for word in WORD.findall(whole):
+                    words.add(word.lower())
     return words
 
 def pdf_text_block(block:str,words:set[str])->str:
@@ -67,12 +98,12 @@ def join_broken(word1:str,word2:str,words:set[str])->str:
         return hyphenated
     return joined
 
-def drop_headers(pages:list[tuple[float,list[tuple[float,float,str]]]])->list[list[str]]:
+def drop_headers(pages:list[tuple[float,list[tuple[float,float,str,list[list[str]]|None]]]])->list[list[tuple[str,list[list[str]]|None]]]:
     counter=Counter()
     for height,blocks in pages:
         keys=set()
-        for top,bottom,text in blocks:
-            if on_edge(top,bottom,height):
+        for top,bottom,text,rows in blocks:
+            if rows is None and on_edge(top,bottom,height):#table cant be header
                 keys.add(edge_key(text))
         counter.update(keys)
     repeated=set()
@@ -82,11 +113,11 @@ def drop_headers(pages:list[tuple[float,list[tuple[float,float,str]]]])->list[li
                 repeated.add(key)
     output=[]
     for height,blocks in pages:#we pass again and remove the repeating ones
-        texts=[]
-        for top,bottom,text in blocks:
-            if not on_edge(top,bottom,height) or not edge_key(text) in repeated:
-                texts.append(text)
-        output.append(texts)
+        kept_texts=[]
+        for top,bottom,text,rows in blocks:
+            if rows is not None or not on_edge(top,bottom,height) or not edge_key(text) in repeated:#we alway keep tables and not headers
+                kept_texts.append((text,rows))
+        output.append(kept_texts)
     return output
 
 def on_edge(top: float,bottom: float,height: float)->bool:
@@ -94,3 +125,79 @@ def on_edge(top: float,bottom: float,height: float)->bool:
 
 def edge_key(text: str)->str:
     return NUMBER.sub("#"," ".join(text.split()).lower())#different pages give the same key if the dig is the only difference
+
+def table_at(block,tables: list[tuple[tuple,list[list[str]]]])->int|None:#to avoid duplicates from tables and normal text parsing
+    x=(block[0]+block[2])/2
+    y=(block[1]+block[3])/2
+    for index,(box_bounds,rows) in enumerate(tables):
+        if box_bounds[0]<=x<=box_bounds[2] and box_bounds[1]<=y<=box_bounds[3]:#if its inside the table bounding box
+            return index
+    return None
+
+def is_table(rows: list[list[str]])->bool:
+    cells=[]
+    for row in rows:
+        for cell in row:
+            cells.append(cell)
+    empty=0
+    for cell in cells:
+        if not cell.strip():
+            empty+=1
+    return empty<len(cells)/2 and len(rows)>=2 and len(rows[0])>=2
+
+def merging_cell(pos:tuple[int,int],boxes,rows:list[list[str]])->str:
+    row_index,col_index=pos
+    column=[]
+    for row_boxes in boxes:#for every row bounding box 
+        if col_index<len(row_boxes) and row_boxes[col_index] is not None:#we keep those that are related to our merging cell
+            column.append(row_boxes[col_index])
+    row=[]
+    for box in boxes[row_index]:
+        if box is not None:#we keep the bounding boxes of the related row
+            row.append(box)
+    if not column or not row:#nothing to merge
+        return ""
+    narrow=min(column,key=lambda box:box[2]-box[0])#width
+    low=min(row,key=lambda box:box[3]-box[1])#height
+    x=(narrow[0]+narrow[2])/2#the middle of column col_index
+    y=(low[1]+low[3])/2#the middle of row row_index
+    for curr_row_index,row_boxes in enumerate(boxes):
+        for curr_col_index,box in enumerate (row_boxes):
+            if  box is not None and box[0]<=x<=box[2] and box[1]<=y<=box[3]:#if current box extends inside the one we want then its the merged one
+                return rows[curr_row_index][curr_col_index]
+    return ""
+
+def filled_rows(table)->list[list[str]]:
+    rows=[]
+    for row in table.extract():
+        new_row=[]
+        for cell in row:
+            new_row.append(cell or "")
+        rows.append(new_row)
+    boxes=[]
+    for row in table.rows:
+        boxes.append(row.cells)
+    for row_index,row_boxes in enumerate(boxes):
+        for col_index,box in enumerate(row_boxes):
+            if box is None:
+                rows[row_index][col_index]=merging_cell((row_index,col_index),boxes,rows)
+    return rows
+
+def page_tables(page,last:tuple[list[list[str]],float]|None)->tuple[list[tuple[tuple,list[list[str]]]],tuple[list[list[str]],float]|None]:
+    height=page.rect.height
+    tables=[]
+    for table in page.find_tables(strategy="lines_strict").tables:
+        rows=filled_rows(table)
+        top=table.bbox[1]/height#percentage of the page
+        if last is not None and top<TABLE_START and last[1]>TABLE_END and len(rows[0])==len(last[0][0]):#the table of this page is the continuation of a table in last page
+            if rows[0]==last[0][0]:#if it repeats the header we skip it
+                rows=rows[1:]
+            last[0].extend(rows)
+            tables.append((table.bbox,[]))
+            last=(last[0],table.bbox[3]/height)
+        elif is_table(rows):
+            tables.append((table.bbox,rows))
+            last=(rows,table.bbox[3]/height)
+    if not tables:
+        last=None
+    return tables,last
