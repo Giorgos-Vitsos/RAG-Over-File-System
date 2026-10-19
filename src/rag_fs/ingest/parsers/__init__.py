@@ -6,6 +6,7 @@ from .office import read_docx,read_word_variants,read_pptx,read_slide_variants,r
 from .opendocument import read_ods,read_odf
 import logging
 from .markdown import read_markdown
+from .pdf import read_pdf
 
 log = logging.getLogger(__name__)
 CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs",".sh",".sql",".r",".m",".php",".rb",".kt",".swift",
@@ -46,7 +47,10 @@ PARSERS={
     ".odp": read_odf,
     ".otp": read_odf,
     ".md": read_markdown,
-    ".markdown": read_markdown
+    ".markdown": read_markdown,
+    ".pdf": read_pdf,
+    ".xps": read_pdf,
+    ".oxps": read_pdf
 }
 
 for ext in CODE_EXT:
