@@ -37,12 +37,17 @@ def read_pdf(path:Path)->str:
                     blocks.append((box[1],box[3],"",rows))
             pages.append((page.rect.height, blocks))
         slides=is_slides(file)
+        bookmarks=file.get_toc()
     pages=drop_headers(pages)#we remove the noise data
+    titles=add_headings(pages,bookmarks,slides)
     words=get_words(pages)
     output=[]
     for i,blocks in enumerate(pages):
         if slides:
-            output.append(f"# Slide {i+1}")
+            header=f"# Slide {i+1}"
+            if i in titles:
+                header+=": "+titles[i]
+            output.append(header)
         for text,rows in blocks:
             if rows is None:
                 text=pdf_text_block(text,words)
@@ -201,3 +206,44 @@ def page_tables(page,last:tuple[list[list[str]],float]|None)->tuple[list[tuple[t
     if not tables:
         last=None
     return tables,last
+
+def find_title(blocks:list[tuple[str,list[list[str]]|None]],title:str)->tuple[int,str,str]|None:
+    key=title.lower()
+    for index,(text,rows) in enumerate(blocks):
+        if rows is not None:#its a table
+            continue
+        flat=" ".join(text.split())#all the text in a single line
+        if flat.lower()==key:
+            return index,flat,""
+        if flat.lower().startswith(key+" "):
+            return index,flat[:len(key)],flat[len(key):].strip()
+    return None
+
+def add_headings(pages:list[list[tuple[str,list[list[str]]|None]]],bookmarks:list,slides:bool)->dict[int,str]:
+    titles={}
+    on_top=[0]*len(pages)#for multiple bookmarks in the same page
+    for level,title,page in bookmarks:
+        page_index=page-1#-1 because bookmark counts from 1 and not 0
+        title=" ".join(title.split())
+        if not title or not 1<=page<=len(pages):#if page is not in pages then its outside link
+            continue
+        blocks=pages[page_index]
+        found=find_title(blocks,title)
+        if slides and page_index not in titles:
+            if found is not None:
+                index,written,rest=found
+                title=written
+                if rest:#if we have text we remove the title so we dont have duplicates
+                    blocks[index]=(rest,None)
+                else:
+                    del blocks[index]
+            titles[page_index]=title
+        elif found is None:
+            blocks.insert(on_top[page_index],("#"*min(level,6)+" "+title,None))#6 is the max depth
+            on_top[page_index]+=1
+        else:
+            index,written,rest=found
+            blocks[index]=("#"*min(level,6)+" "+written,None)
+            if rest:
+                blocks.insert(index+1,(rest,None))
+    return titles

@@ -339,3 +339,79 @@ def test_lines_that_are_not_a_table_stay_text(tmp_path, cells, expected):
 def test_table_on_a_slide(tmp_path):
     text = tables_pdf(tmp_path, [[(100, "<p>Βαθμοί</p>"), (200, GRADES)]], LANDSCAPE)
     assert text == "# Slide 1\n\nΒαθμοί\n\n" + GRADES_TEXT
+
+
+# a pdf with one page for each html string and bookmarks [level, title, page]
+def toc_pdf(tmp_path, pages, toc, size=PORTRAIT):
+    doc = pymupdf.open()
+    for html in pages:
+        page = doc.new_page(width=size[0], height=size[1])
+        if html:
+            page.insert_htmlbox(pymupdf.Rect(50, 200, 400, size[1] - 150), html)
+    doc.set_toc(toc)
+    f = tmp_path / "toc.pdf"
+    doc.save(f)
+    return read_pdf(f)
+
+
+# (pages, bookmarks, text)
+TOC_CASES = {
+    "title is a block": (["<p>Εισαγωγή</p><p>Κείμενο.</p>"], [[1, "Εισαγωγή", 1]], "# Εισαγωγή\n\nΚείμενο."),
+    "levels": (["<p>Α</p><p>Β</p><p>Γ</p>"], [[1, "Α", 1], [2, "Β", 1], [3, "Γ", 1]], "# Α\n\n## Β\n\n### Γ"),
+    "title starts a block": (
+        ["<p>Εισαγωγή<br>Κείμενο της ενότητας.</p>"], [[1, "Εισαγωγή", 1]], "# Εισαγωγή\n\nΚείμενο της ενότητας."),
+    "spaces and capitals do not matter": (
+        ["<p>ΕΙΣΑΓΩΓΗ ΣΤΟ ΘΕΜΑ</p><p>Κείμενο.</p>"], [[1, "Εισαγωγη  στο θεμα", 1]], "# ΕΙΣΑΓΩΓΗ ΣΤΟ ΘΕΜΑ\n\nΚείμενο."),
+    "only the first block with the title": (
+        ["<p>Μέθοδος</p><p>Η μέθοδος:</p><p>Μέθοδος</p>"], [[1, "Μέθοδος", 1]],
+        "# Μέθοδος\n\nΗ μέθοδος:\n\nΜέθοδος"),
+    "title not on the page goes to its top": (["<p>Κείμενο.</p>"], [[1, "Περίληψη", 1]], "# Περίληψη\n\nΚείμενο."),
+    "titles not on the page keep their order": (
+        ["<p>Κείμενο.</p>"], [[1, "Πρώτο", 1], [2, "Δεύτερο", 1]], "# Πρώτο\n\n## Δεύτερο\n\nΚείμενο."),
+    "title of a page with no text": (["<p>Α</p>", ""], [[1, "Παράρτημα", 2]], "Α\n\n# Παράρτημα"),
+    "bookmark on the second page": (
+        ["<p>Α</p>", "<p>Μέθοδος</p><p>Β</p>"], [[1, "Μέθοδος", 2]], "Α\n\n# Μέθοδος\n\nΒ"),
+    "bookmark to no page is skipped": (["<p>Α</p>"], [[1, "Α", 1], [1, "Πουθενά", -1]], "# Α"),
+    "title is not part of a longer title": (["<p>Κεφάλαιο 10</p>"], [[1, "Κεφάλαιο 1", 1]], "# Κεφάλαιο 1\n\nΚεφάλαιο 10"),
+    "levels deeper than 6 stay at 6": (
+        ["".join(f"<p>{c}</p>" for c in "ΑΒΓΔΕΖΗ")], [[i + 1, c, 1] for i, c in enumerate("ΑΒΓΔΕΖΗ")],
+        "# Α\n\n## Β\n\n### Γ\n\n#### Δ\n\n##### Ε\n\n###### Ζ\n\n###### Η"),
+}
+
+
+# bookmarks become headings
+@pytest.mark.parametrize("pages, toc, expected", TOC_CASES.values(), ids=TOC_CASES.keys())
+def test_headings_from_bookmarks(tmp_path, pages, toc, expected):
+    assert toc_pdf(tmp_path, pages, toc) == expected
+
+
+# a bookmark with an empty title adds nothing
+def test_empty_bookmark_title_is_skipped(tmp_path):
+    assert toc_pdf(tmp_path, ["<p>Α</p>"], [[1, " ", 1]]) == "Α"
+
+
+# on slides the bookmark is the title of the slide, like pptx
+def test_slide_titles_from_bookmarks(tmp_path):
+    text = toc_pdf(tmp_path, ["<p>Εισαγωγή</p><p>Κείμενο.</p>", "<p>Β</p>", ""],
+                   [[1, "Εισαγωγή", 1], [1, "Τέλος", 3]], LANDSCAPE)
+    assert text == "# Slide 1: Εισαγωγή\n\nΚείμενο.\n\n# Slide 2\n\nΒ\n\n# Slide 3: Τέλος"
+
+
+# the slide title is taken as written on the slide, and a second bookmark is a heading
+def test_slide_title_as_written_on_the_slide(tmp_path):
+    text = toc_pdf(tmp_path, ["<p>ΕΙΣΑΓΩΓΗ<br>Κείμενο.</p><p>Στόχοι</p>"], [[1, "Εισαγωγη", 1], [2, "Στόχοι", 1]], LANDSCAPE)
+    assert text == "# Slide 1: ΕΙΣΑΓΩΓΗ\n\nΚείμενο.\n\n## Στόχοι"
+
+
+# a chapter title that is also the running header of its pages is removed as a header, then comes back as a heading
+def test_heading_that_was_also_a_header(tmp_path):
+    w, h = PORTRAIT
+    doc = pymupdf.open()
+    for body in ["Α", "Β", "Γ"]:
+        page = doc.new_page(width=w, height=h)
+        page.insert_htmlbox(pymupdf.Rect(50, 20, 400, 60), "<p>Κεφάλαιο 1</p>")
+        page.insert_htmlbox(pymupdf.Rect(50, 300, 400, 400), f"<p>{body}</p>")
+    doc.set_toc([[1, "Κεφάλαιο 1", 1]])
+    f = tmp_path / "chapter.pdf"
+    doc.save(f)
+    assert read_pdf(f) == "# Κεφάλαιο 1\n\nΑ\n\nΒ\n\nΓ"
