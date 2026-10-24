@@ -204,6 +204,8 @@ LAYOUT = {
     "game/Assets.meta": "sidecar_file",
     "game/Assets/notes.meta": "kept",
     "game/Assets/.meta": "kept",
+    # unity data of the editor (D68)
+    "game/Assets/Level1.asset": "ignored_file",
     # junk files of the system and of office
     "docs/desktop.ini": "ignored_file",
     "docs/Thumbs.db": "ignored_file",
@@ -268,3 +270,4 @@ def test_every_matching_rule_is_tried(tmp_path):
     result = scan(CorpusConfig(roots=[root], ignore_dirs_with={"Lib*": ["nothing"], "Library": ["ArtifactDB"]}))
 
     assert what_happened(root, result, "game/Library/ArtifactDB") == "generated_dir"
+

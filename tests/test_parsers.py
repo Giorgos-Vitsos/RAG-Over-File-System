@@ -1593,3 +1593,34 @@ def test_read_pptx_field_in_a_paragraph(tmp_path):
     p.save(str(f))
 
     assert read_pptx(f) == "# Slide 1\n\nΔιαφάνεια 1"
+
+
+# (file name, text in the file, text after parse_file)
+NORMALIZE_CASES = {
+    "micro sign in a Greek word": ("notes.txt", "Το σήµα", "Το σήμα"),
+    "math letters in Greek words": ("notes.txt", "ϕως ϐάση ϑέμα ϱοή", "φως βάση θέμα ροή"),
+    "tonos before every capital vowel": (
+        "notes.txt", "΄Αλφα ΄Εψιλον ΄Ητα ΄Ιωτα ΄Ομικρον ΄Υψιλον ΄Ωμέγα", "Άλφα Έψιλον Ήτα Ίωτα Όμικρον Ύψιλον Ώμέγα"),
+    "acute accent before a capital": ("notes.txt", "´Ασκηση", "Άσκηση"),
+    "ligature and no-break space": ("notes.txt", "ﬁle name", "file name"),
+    "table cells": ("grades.csv", "Λέξη;Βαθμός\nσήµα;9\n", "Λέξη: σήμα; Βαθμός: 9"),
+    "markdown heading": ("notes.md", "# ΄Ασκηση 1\n\nΤο σήµα", "# Άσκηση 1\n\nΤο σήμα"),
+}
+
+
+# look-alike letters and a tonos written apart become the normal Greek letters
+@pytest.mark.parametrize("name, written, expected", NORMALIZE_CASES.values(), ids=NORMALIZE_CASES.keys())
+def test_parse_file_normalizes_unicode(tmp_path, name, written, expected):
+    assert parse_one(tmp_path, name, written.encode()).raw_text == expected
+
+
+# text that is already right does not change
+@pytest.mark.parametrize("text", ["Άσκηση και μάθημα", "Ελληνικά, English, 2024-03-01 15:30", "ΆΣΚΗΣΗ ΜΆΘΗΜΑ"])
+def test_parse_file_keeps_normal_text(tmp_path, text):
+    assert parse_one(tmp_path, "notes.txt", text.encode()).raw_text == text
+
+
+# code is kept as written, a string in a program must not change
+def test_parse_file_leaves_code_as_written(tmp_path):
+    code = 'MICRO = "µ"\nPHI = "ϕ"\nTONOS = "΄Α"\nFI = "ﬁ"\n'
+    assert parse_one(tmp_path, "units.py", code.encode()).raw_text == code

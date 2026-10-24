@@ -7,6 +7,8 @@ from .opendocument import read_ods,read_odf
 import logging
 from .markdown import read_markdown
 from .pdf import read_pdf
+import unicodedata
+import re
 
 log = logging.getLogger(__name__)
 CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs",".sh",".sql",".r",".m",".php",".rb",".kt",".swift",
@@ -15,6 +17,7 @@ CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs","
 TABULAR_EXT={".csv",".tsv",".xlsx",".xls",".ods"}
 BINARY_EXT={".zip", ".gz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".bin", ".iso", ".mp3", ".wav", ".flac", ".mp4", ".mkv", 
             ".avi", ".mov", ".ttf",".woff", ".pyc", ".class", ".jar", ".o", ".db", ".sqlite"}
+ACCENT_START=re.compile(r"[\u0384\u00b4][ΑΕΗΙΟΥΩ]")#greek characters with accents that break
 
 PARSERS={
     ".txt": read_text,
@@ -70,6 +73,8 @@ def parse_file(scanned: ScannedFile)->Document:
         else:
             return make_doc(ext,"","binary","unsupported",scanned)
     text=text.replace("\r\n", "\n").replace("\r", "\n").removeprefix("\ufeff")
+    if content_type_of(ext)!="code":#in code we dont change any char
+        text=normalize(text)
     if text.strip()=="":
         return make_doc(ext,text,content_type_of(ext),"empty",scanned)
     return make_doc(ext,text,content_type_of(ext),"ok",scanned)
@@ -86,3 +91,8 @@ def content_type_of(ext):
         return "tabular"
     else:
         return "prose"
+
+def normalize(text:str)->str:
+    text=ACCENT_START.sub(lambda match: unicodedata.normalize("NFC",match.group(0)[-1]+"\u0301"),text)
+    text=unicodedata.normalize("NFKC",text)
+    return text
