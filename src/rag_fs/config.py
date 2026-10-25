@@ -30,6 +30,17 @@ class CorpusConfig:
     follow_symlinks: bool = False
 
 @dataclass(frozen=True)
+class OCRConfig:
+    languages: list[str]=field(default_factory=lambda:[
+        "ell","eng"
+    ])
+    tessdata_dir: str="~/.local/share/tessdata_best"
+    dpi: int=300
+    min_confidence: float=60
+    min_chars: int=20
+    min_image_size: int=300
+
+@dataclass(frozen=True)
 class ChunkingConfig:
     strategy: str = "content_aware"
     narrative_words: int = 400
@@ -66,11 +77,12 @@ class Config:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    ocr: OCRConfig= field(default_factory=OCRConfig)
 
 def load_config(path: str | Path)->Config:
     with open(path,encoding="utf-8") as f:
         data=yaml.safe_load(f) or {}
-    allowed=["seed","corpus","chunking","models","retrieval","llm"]
+    allowed=["seed","corpus","chunking","models","retrieval","llm","ocr"]
     for key in data:
         if key not in allowed:
             raise ValueError(f"unknown config section {key}")
@@ -87,4 +99,5 @@ def load_config(path: str | Path)->Config:
         models=ModelsConfig(**data.get("models",{})),
         retrieval=RetrievalConfig(**data.get("retrieval",{})),
         llm=LLMConfig(**data.get("llm",{})),
+        ocr=OCRConfig(**data.get("ocr",{}))
     )

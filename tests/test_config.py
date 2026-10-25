@@ -97,3 +97,23 @@ def test_ignore_rules_from_yaml(tmp_path):
 
     assert config.corpus.ignore_dirs_with == {"dist": ["*.whl"]}
     assert config.corpus.ignore_sidecars == []
+
+
+# the OCR defaults: Greek and English, the best models, 300 dpi, the D30 quality limits
+def test_ocr_defaults():
+    ocr = Config().ocr
+    assert ocr.languages == ["ell", "eng"]
+    assert ocr.tessdata_dir == "~/.local/share/tessdata_best"
+    assert (ocr.dpi, ocr.min_confidence, ocr.min_chars, ocr.min_image_size) == (300, 60, 20, 300)
+
+
+# the yaml can change the OCR languages and keep the rest
+def test_ocr_settings_from_yaml(tmp_path):
+    yaml_file = tmp_path / "ocr.yaml"
+    yaml_file.write_text("ocr:\n  languages: [deu, eng]\n  dpi: 200\n")
+
+    ocr = load_config(yaml_file).ocr
+
+    assert ocr.languages == ["deu", "eng"]
+    assert ocr.dpi == 200
+    assert ocr.min_chars == 20
