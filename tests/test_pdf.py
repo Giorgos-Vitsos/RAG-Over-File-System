@@ -1,12 +1,23 @@
+import io
+
 import pymupdf
 import pytest
+from PIL import Image
 
-from rag_fs.ingest.parsers import PARSERS
+from rag_fs.config import OCRConfig
+from rag_fs.ingest.parsers import OCR_PARSERS, PARSERS
+from rag_fs.ingest.parsers import pdf as pdf_module
 from rag_fs.ingest.parsers.pdf import read_pdf
+from test_ocr import SENTENCE, picture
 from test_parsers import parse_one
 
 PORTRAIT = (595, 842)
 LANDSCAPE = (842, 595)
+
+
+# the text of a pdf, without the flag that says if OCR was used
+def pdf_text(path):
+    return read_pdf(path)[0]
 
 
 # a pdf with one page for each html string, as bytes
@@ -23,7 +34,7 @@ def pdf_bytes(pages, size=PORTRAIT):
 def read(tmp_path, pages, size=PORTRAIT):
     f = tmp_path / "doc.pdf"
     f.write_bytes(pdf_bytes(pages, size))
-    return read_pdf(f)
+    return pdf_text(f)
 
 
 # (html of one page, text)
@@ -83,13 +94,7 @@ def test_half_landscape_is_a_document(tmp_path):
         doc.new_page(width=w, height=h).insert_htmlbox(pymupdf.Rect(50, 50, 300, 400), f"<p>{text}</p>")
     f = tmp_path / "mixed.pdf"
     doc.save(f)
-    assert read_pdf(f) == "Α\n\nΒ"
-
-
-# .pdf and the xps formats that pymupdf also opens
-@pytest.mark.parametrize("ext", [".pdf", ".xps", ".oxps"])
-def test_pdf_extensions_are_registered(ext):
-    assert PARSERS.get(ext) is read_pdf
+    assert pdf_text(f) == "Α\n\nΒ"
 
 
 # through parse_file: text, scanned (no text), password, broken file
@@ -126,7 +131,7 @@ def edges_pdf(tmp_path, bodies, headers=None, footers=None, size=PORTRAIT):
                 page.insert_htmlbox(pymupdf.Rect(50, top, w - 50, top + 0.05 * h), texts[i].format(n=i + 1))
     f = tmp_path / "edges.pdf"
     doc.save(f)
-    return read_pdf(f)
+    return pdf_text(f)
 
 
 THREE = ["<p>Α</p>", "<p>Β</p>", "<p>Γ</p>"]
@@ -190,7 +195,7 @@ def placed_pdf(tmp_path, blocks):
             page.insert_htmlbox(pymupdf.Rect(50, top * h, w - 50, bottom * h), html)
     f = tmp_path / "placed.pdf"
     doc.save(f)
-    return read_pdf(f)
+    return pdf_text(f)
 
 
 # only blocks that are whole inside the top or bottom 12% can be headers
@@ -233,7 +238,7 @@ def tables_pdf(tmp_path, pages, size=PORTRAIT):
                 draw_table(page, y, thing)
     f = tmp_path / "tables.pdf"
     doc.save(f)
-    return read_pdf(f)
+    return pdf_text(f)
 
 
 GRADES = grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"], ["Νίκος", "7"]])
@@ -351,7 +356,7 @@ def toc_pdf(tmp_path, pages, toc, size=PORTRAIT):
     doc.set_toc(toc)
     f = tmp_path / "toc.pdf"
     doc.save(f)
-    return read_pdf(f)
+    return pdf_text(f)
 
 
 # (pages, bookmarks, text)
@@ -414,4 +419,135 @@ def test_heading_that_was_also_a_header(tmp_path):
     doc.set_toc([[1, "Κεφάλαιο 1", 1]])
     f = tmp_path / "chapter.pdf"
     doc.save(f)
-    assert read_pdf(f) == "# Κεφάλαιο 1\n\nΑ\n\nΒ\n\nΓ"
+    assert pdf_text(f) == "# Κεφάλαιο 1\n\nΑ\n\nΒ\n\nΓ"
+
+
+
+SCAN = picture(SENTENCE)
+LOGO = picture("Λογότυπο")
+WATERMARK = "<p>Σαρωμένο με την εφαρμογή ScanApp Pro, έκδοση 2.4 για Android</p>"
+LONG_TEXT = "<p>" + "Κείμενο της σελίδας με αρκετές λέξεις. " * 3 + "</p>"
+CLASS = grid([["Όνομα", "Βαθμός"]] + [[name, "9"] for name in ["Μαρία", "Νίκος", "Ελένη", "Γιώργος", "Δήμητρα", "Κατερίνα"]])
+
+
+# the picture as png bytes, to place it on a pdf page
+def png(image):
+    data = io.BytesIO()
+    image.save(data, format="PNG")
+    return data.getvalue()
+
+
+# a pdf whose pages hold, between (top, bottom) as parts of the page height, html text, tables or pictures;
+# gives what read_pdf gives: (text, OCR used)
+def scan_pdf(tmp_path, pages, size=PORTRAIT, toc=None, ocr=None):
+    doc = pymupdf.open()
+    for items in pages:
+        page = doc.new_page(width=size[0], height=size[1])
+        for top, bottom, thing in items:
+            rect = pymupdf.Rect(50, top * size[1], size[0] - 50, bottom * size[1])
+            if isinstance(thing, str):
+                page.insert_htmlbox(rect, thing)
+            elif isinstance(thing, list):
+                draw_table(page, rect.y0, thing)
+            else:
+                page.insert_image(rect, stream=png(thing))
+    if toc:
+        doc.set_toc(toc)
+    f = tmp_path / "scan.pdf"
+    doc.save(f)
+    return read_pdf(f) if ocr is None else read_pdf(f, ocr)
+
+
+# (pages, size, text, OCR used)
+SCAN_CASES = {
+    "scanned page": ([[(0.2, 0.5, SCAN)]], PORTRAIT, SENTENCE, True),
+    "text page is not touched": ([[(0.2, 0.3, "<p>Πρώτη σελίδα.</p>")]], PORTRAIT, "Πρώτη σελίδα.", False),
+    "scanned page after a text page": (
+        [[(0.2, 0.3, "<p>Πρώτη σελίδα.</p>")], [(0.2, 0.5, SCAN)]], PORTRAIT, "Πρώτη σελίδα.\n\n" + SENTENCE, True),
+    "enough text and a logo: no OCR": ([[(0.2, 0.4, LONG_TEXT), (0.6, 0.7, LOGO)]], PORTRAIT,
+                                       "Κείμενο της σελίδας με αρκετές λέξεις. " * 2 + "Κείμενο της σελίδας με αρκετές λέξεις.", False),
+    "a page number and a scan: the whole page is read": (
+        [[(0.05, 0.1, "<p>Σελίδα 3</p>"), (0.2, 0.5, SCAN)]], PORTRAIT, "Σελίδα 3\n\n" + SENTENCE, True),
+    "table text counts as text": ([[(0.1, 0.5, CLASS), (0.7, 0.8, LOGO)]], PORTRAIT,
+                                  "\n".join(f"Όνομα: {n}; Βαθμός: 9" for n in ["Μαρία", "Νίκος", "Ελένη", "Γιώργος", "Δήμητρα", "Κατερίνα"]),
+                                  False),
+    "little text and no picture: no OCR": (
+        [[(0.2, 0.3, "<p>Μια σύντομη σελίδα χωρίς εικόνες.</p>")]], PORTRAIT, "Μια σύντομη σελίδα χωρίς εικόνες.", False),
+    "blank scan is dropped by the quality limits": (
+        [[(0.2, 0.5, Image.new("RGB", (1000, 300), "white"))]], PORTRAIT, "", False),
+    "scanned slide": ([[(0.2, 0.6, SCAN)]], LANDSCAPE, "# Slide 1\n\n" + SENTENCE, True),
+}
+
+
+# pages with almost no text and a picture are read by OCR, the others are kept as they are
+@pytest.mark.parametrize("pages, size, text, used", SCAN_CASES.values(), ids=SCAN_CASES.keys())
+def test_read_pdf_ocr_of_pages(tmp_path, pages, size, text, used):
+    assert scan_pdf(tmp_path, pages, size) == (text, used)
+
+
+# a page drawn only with lines has no picture to read
+def test_read_pdf_page_of_lines_only(tmp_path):
+    doc = pymupdf.open()
+    doc.new_page().draw_rect(pymupdf.Rect(100, 100, 300, 300), color=(0, 0, 0))
+    f = tmp_path / "lines.pdf"
+    doc.save(f)
+    assert read_pdf(f) == ("", False)
+
+
+# a long watermark on every scanned page is a header: once it is removed the page is empty and is read by OCR
+def test_read_pdf_scans_with_a_watermark(tmp_path):
+    text, used = scan_pdf(tmp_path, [[(0.02, 0.07, WATERMARK), (0.2, 0.5, SCAN)]] * 3)
+    assert used and text.count(SENTENCE) == 3
+
+
+# the bookmark title is found in the text that OCR gave
+def test_read_pdf_bookmark_in_a_scanned_page(tmp_path):
+    body = "Το εργαστήριο της Python είναι την Τρίτη."
+    page = picture(f"<p>Εισαγωγή</p><p style='margin-top:40px'>{body}</p>")
+    assert scan_pdf(tmp_path, [[(0.2, 0.6, page)]], toc=[[1, "Εισαγωγή", 1]]) == (f"# Εισαγωγή\n\n{body}", True)
+
+
+# the OCR settings are used: the languages and the dpi of the page picture
+@pytest.mark.parametrize("settings", [{"languages": ["eng"]}, {"dpi": 30}], ids=["no greek", "too few dots"])
+def test_read_pdf_uses_the_ocr_config(tmp_path, settings):
+    text, _ = scan_pdf(tmp_path, [[(0.2, 0.5, SCAN)]], ocr=OCRConfig(**settings))
+    assert "εργασίες" not in text
+
+
+# parse_file gives the ocr status to a scanned pdf and passes its settings
+def test_parse_file_scanned_pdf(tmp_path):
+    doc = pymupdf.open()
+    doc.new_page().insert_image(pymupdf.Rect(50, 150, 545, 450), stream=png(SCAN))
+    data = doc.tobytes()
+    scanned = parse_one(tmp_path, "scan.pdf", data)
+    assert (scanned.parse_status, scanned.raw_text) == ("ocr", SENTENCE)
+
+
+# .pdf and the xps formats that pymupdf also opens go through the OCR readers
+@pytest.mark.parametrize("ext", [".pdf", ".xps", ".oxps"])
+def test_pdf_is_an_ocr_reader(ext):
+    assert OCR_PARSERS[ext] is read_pdf and ext not in PARSERS
+
+
+# a fixed answer of the OCR, so that only the choices of read_pdf are tested
+FOUND = ("Το κείμενο που βρήκε το OCR στη σελίδα.", 95.0)
+TEXT_49 = "Μια σελίδα με λίγο κείμενο και ένα λογότυπο εδώ.."
+TEXT_50 = "Μια σελίδα με λίγο κείμενο και ένα λογότυπο εδώ..."
+CLASS_TEXT = "\n".join(f"Όνομα: {n}; Βαθμός: 9" for n in ["Μαρία", "Νίκος", "Ελένη", "Γιώργος", "Δήμητρα", "Κατερίνα"])
+
+
+# (pages, what ocr_image gives, what read_pdf gives)
+LIMIT_CASES = {
+    "49 characters and a picture: OCR": ([[(0.2, 0.3, f"<p>{TEXT_49}</p>"), (0.6, 0.7, LOGO)]], FOUND, (FOUND[0], True)),
+    "50 characters and a picture: no OCR": ([[(0.2, 0.3, f"<p>{TEXT_50}</p>"), (0.6, 0.7, LOGO)]], FOUND, (TEXT_50, False)),
+    "a table counts as text: no OCR": ([[(0.1, 0.5, CLASS), (0.7, 0.8, LOGO)]], FOUND, (CLASS_TEXT, False)),
+    "sure but too short: not kept": ([[(0.2, 0.5, SCAN)]], ("ΟΚ", 95.0), ("", False)),
+    "long but unsure: not kept": ([[(0.2, 0.5, SCAN)]], ("Ένα κείμενο που μοιάζει μεγάλο αλλά είναι θόρυβος", 30.0), ("", False)),
+}
+
+
+# when a page goes to OCR and when its text is kept, right at the limits
+@pytest.mark.parametrize("pages, found, expected", LIMIT_CASES.values(), ids=LIMIT_CASES.keys())
+def test_read_pdf_ocr_limits(tmp_path, monkeypatch, pages, found, expected):
+    monkeypatch.setattr(pdf_module, "ocr_image", lambda image, ocr: found)
+    assert scan_pdf(tmp_path, pages) == expected

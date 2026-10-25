@@ -53,9 +53,6 @@ PARSERS={
     ".otp": read_odf,
     ".md": read_markdown,
     ".markdown": read_markdown,
-    ".pdf": read_pdf,
-    ".xps": read_pdf,
-    ".oxps": read_pdf,
 }
 
 OCR_PARSERS={
@@ -67,6 +64,9 @@ OCR_PARSERS={
     ".bmp": read_image,
     ".gif": read_image,
     ".webp": read_image,
+    ".pdf": read_pdf,
+    ".xps": read_pdf,
+    ".oxps": read_pdf,
 }
 
 for ext in CODE_EXT:

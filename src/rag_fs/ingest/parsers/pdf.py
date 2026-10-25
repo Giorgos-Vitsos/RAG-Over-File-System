@@ -4,7 +4,9 @@ from pathlib import Path
 import pymupdf
 from collections import Counter
 from .tabular import format_rows
-
+from .ocr import ocr_image
+from PIL import Image
+from rag_fs.config import OCRConfig
 LIGATURE=re.compile("[\ufb00-\ufb06]")#one character for two or three letters
 BROKEN_WORD=re.compile(r"(\w+)-\n(\w+)")#a word cut by a hyphen at the end of a line
 WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
@@ -12,8 +14,10 @@ NUMBER=re.compile(r"\d+")
 EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut
+CHAR_COUNT_OCR_FLAG=50
 
-def read_pdf(path:Path)->str:
+def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
+    ocr_flag=False
     with pymupdf.open(path) as file:
         if file.needs_pass:#if its password protected
             raise ValueError(f"The pdf {path} is password protected and cant be parsed")
@@ -36,9 +40,32 @@ def read_pdf(path:Path)->str:
                 if index not in placed:
                     blocks.append((box[1],box[3],"",rows))
             pages.append((page.rect.height, blocks))
+        pages=drop_headers(pages)#we remove the noise data
+        for index,page in enumerate(file.pages()):#we check for ocr inside the pdf page
+            blocks=pages[index]
+            char_count=0
+            for text,rows in blocks:
+                if rows is None:
+                    char_count+=len(text.strip())
+                else:
+                    for row in rows:
+                        for cell in row:
+                            char_count+=len(cell.strip())
+            if char_count>=CHAR_COUNT_OCR_FLAG or not page.get_images():#no ocr needed
+                continue
+            pix = page.get_pixmap(dpi=ocr.dpi)#we create the image
+            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+            text_ocr,confidence=ocr_image(image,ocr)
+            if confidence<ocr.min_confidence or len(text_ocr.strip())<ocr.min_chars:#ocr is not confident source
+                continue
+            ocr_blocks=text_ocr.split("\n\n")
+            new_blocks=[]
+            for block in ocr_blocks:
+                new_blocks.append((block,None))
+            pages[index]=new_blocks#we swap the block for the ocr one
+            ocr_flag=True
         slides=is_slides(file)
         bookmarks=file.get_toc()
-    pages=drop_headers(pages)#we remove the noise data
     titles=add_headings(pages,bookmarks,slides)
     words=get_words(pages)
     output=[]
@@ -61,7 +88,7 @@ def read_pdf(path:Path)->str:
                 text=format_rows(clean)
             if text:
                 output.append(text)
-    return "\n\n".join(output)
+    return "\n\n".join(output),ocr_flag
 
 def is_slides(file)->bool:
     landscape_counter=0
