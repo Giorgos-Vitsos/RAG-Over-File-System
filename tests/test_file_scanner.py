@@ -271,3 +271,26 @@ def test_every_matching_rule_is_tried(tmp_path):
 
     assert what_happened(root, result, "game/Library/ArtifactDB") == "generated_dir"
 
+
+
+
+# data files of unity and project files of the IDEs are not text of the user (D71)
+@pytest.mark.parametrize("rel", [
+    "game/Assets/Wood.mat", "game/Assets/Walk.anim", "game/Assets/Player.prefab", "game/Assets/Player.controller",
+    "game/Assets/Water.shadergraph", "game/Assets/Main.unity", "game/Assets/Audio.mixer", "game/Assets/Controls.inputactions",
+    "java/app.iml", "game/Game.csproj", "game/Game.sln", "game/Game.slnx",
+])
+def test_unity_and_ide_files_are_ignored(tmp_path, rel):
+    root = tmp_path / "corpus"
+    (root / rel).parent.mkdir(parents=True)
+    (root / rel).write_text("x")
+    assert what_happened(root, scan(CorpusConfig(roots=[root])), rel) == "ignored_file"
+
+
+# pictures written as numbers and latex helper files stay, the user decided so (D71)
+@pytest.mark.parametrize("rel", ["lab/picture.ppm", "thesis/main.aux"])
+def test_ppm_and_aux_files_are_kept(tmp_path, rel):
+    root = tmp_path / "corpus"
+    (root / rel).parent.mkdir(parents=True)
+    (root / rel).write_text("x")
+    assert what_happened(root, scan(CorpusConfig(roots=[root])), rel) == "kept"

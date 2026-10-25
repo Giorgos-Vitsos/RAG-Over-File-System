@@ -11,7 +11,8 @@ class CorpusConfig:
     ])
     ignore_globs: list[str] = field(default_factory=lambda: [
         "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*",
-        "desktop.ini", "Thumbs.db", ".DS_Store", "~$*", "._*","*.asset"
+        "desktop.ini", "Thumbs.db", ".DS_Store", "~$*", "._*","*.asset","*.mat","*.anim","*.prefab","*.controller",
+        "*.shadergraph","*.unity","*.mixer","*.inputactions","*.iml","*.csproj","*.sln","*.slnx"
     ])
     ignore_dirs_with: dict[str, list[str]] = field(default_factory=lambda: {#we ignore these dirs only if they are generated with these files
         "Library": ["ArtifactDB", "PackageCache"],

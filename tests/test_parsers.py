@@ -1624,3 +1624,18 @@ def test_parse_file_keeps_normal_text(tmp_path, text):
 def test_parse_file_leaves_code_as_written(tmp_path):
     code = 'MICRO = "µ"\nPHI = "ϕ"\nTONOS = "΄Α"\nFI = "ﬁ"\n'
     assert parse_one(tmp_path, "units.py", code.encode()).raw_text == code
+
+
+
+# programs in the alpha language of the compiler course are code, so nothing in them is changed
+@pytest.mark.parametrize("name", ["test1.asc", "queue.alpha", "MAIN.ASC"])
+def test_alpha_files_are_code(tmp_path, name):
+    program = 'x = "µ";\nprint("΄Α", x);\n'
+    doc = parse_one(tmp_path, name, program.encode())
+    assert (doc.content_type, doc.raw_text) == ("code", program)
+
+
+# inputs and outputs of the compiler tests stay plain text
+@pytest.mark.parametrize("name", ["test1.in", "test1.out"])
+def test_compiler_inputs_and_outputs_are_text(tmp_path, name):
+    assert parse_one(tmp_path, name, b"quad 1: assign x 5\n").content_type == "prose"
