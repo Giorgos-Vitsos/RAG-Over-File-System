@@ -3,12 +3,14 @@ from rag_fs.models import Document
 from .text import read_text
 from .tabular import read_csv,read_xlsx,read_xls
 from .office import read_docx,read_word_variants,read_pptx,read_slide_variants,read_rtf
+from .ocr import read_image
 from .opendocument import read_ods,read_odf
 import logging
 from .markdown import read_markdown
 from .pdf import read_pdf
 import unicodedata
 import re
+from rag_fs.config import OCRConfig
 
 log = logging.getLogger(__name__)
 CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs",".sh",".sql",".r",".m",".php",".rb",".kt",".swift",
@@ -53,22 +55,37 @@ PARSERS={
     ".markdown": read_markdown,
     ".pdf": read_pdf,
     ".xps": read_pdf,
-    ".oxps": read_pdf
+    ".oxps": read_pdf,
+}
+
+OCR_PARSERS={
+    ".png": read_image,
+    ".jpg": read_image,
+    ".jpeg": read_image,
+    ".tif": read_image,
+    ".tiff": read_image,
+    ".bmp": read_image,
+    ".gif": read_image,
+    ".webp": read_image,
 }
 
 for ext in CODE_EXT:
     PARSERS[ext]=read_text
   
-def parse_file(scanned: ScannedFile)->Document:
+def parse_file(scanned: ScannedFile,ocr:OCRConfig=OCRConfig())->Document:
+    used=False
     ext=scanned.rel_path.suffix.lower()
     if ext in BINARY_EXT:
         return make_doc(ext,"","binary","unsupported",scanned)
     parser=PARSERS.get(ext,read_text)
     try:
-        text=parser(scanned.abs_path)
+        if ext in OCR_PARSERS:
+            text,used=OCR_PARSERS[ext](scanned.abs_path,ocr)
+        else:
+            text=parser(scanned.abs_path)
     except Exception as e:
         log.warning(f"cannot parse {scanned.rel_path}: {e}")
-        if ext in PARSERS:
+        if ext in PARSERS or ext in OCR_PARSERS:
             return make_doc(ext,"",content_type_of(ext),"failed",scanned)
         else:
             return make_doc(ext,"","binary","unsupported",scanned)
@@ -77,7 +94,10 @@ def parse_file(scanned: ScannedFile)->Document:
         text=normalize(text)
     if text.strip()=="":
         return make_doc(ext,text,content_type_of(ext),"empty",scanned)
-    return make_doc(ext,text,content_type_of(ext),"ok",scanned)
+    if used:
+        return make_doc(ext,text,content_type_of(ext),"ocr",scanned)
+    else:
+        return make_doc(ext,text,content_type_of(ext),"ok",scanned)
 
 
 def make_doc(ext,text,content_type,status,scanned:ScannedFile,)->Document:

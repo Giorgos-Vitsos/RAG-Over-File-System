@@ -1,6 +1,7 @@
 from ...config import OCRConfig
 from pathlib import Path
 import pytesseract
+from PIL import Image, ImageOps, ImageSequence
 
 def check_ocr(ocr: OCRConfig):
     if not ocr.languages:
@@ -45,3 +46,28 @@ def ocr_image(image,ocr:OCRConfig)->tuple[str,float]:
     else:
         mean=sum(confidences)/len(confidences)
     return output,mean
+
+def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
+    with Image.open(path) as img:
+        ocr_results=[]
+        if path.suffix.lower() in (".tif", ".tiff"):
+            frames=ImageSequence.Iterator(img)
+        else:
+            frames=[img]
+        for frame in frames:
+            frame=ImageOps.exif_transpose(frame)
+            if min(frame.size)<ocr.min_image_size:
+                continue
+            if frame.mode.startswith("I;16"):
+                frame=frame.convert("I").point(lambda v: v * (1 / 256)).convert("L")
+            rgba = frame.convert("RGBA")#we convert all images to white background with bold text so its more visible
+            page = Image.new("RGB", rgba.size, "white")
+            page.paste(rgba, mask=rgba.getchannel("A"))
+            text,confidence=ocr_image(page,ocr)
+            if confidence<ocr.min_confidence or len(text.strip())<ocr.min_chars:
+                continue
+            ocr_results.append(text)
+        if ocr_results:
+            return "\n\n".join(ocr_results),True
+        else:
+            return "",False
