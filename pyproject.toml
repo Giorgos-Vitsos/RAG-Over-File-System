@@ -32,7 +32,7 @@ dependencies = [
 
 [project.optional-dependencies]     # optional groups: pip install -e ".[research]"
 research = [ "scipy","statsmodels","ragas" ]
-dev = [ "pytest","pyright","pandas" ]
+dev = [ "pytest","pytest-xdist","pyright","pandas" ]
 
 [tool.setuptools.packages.find]
 where = ["src"]

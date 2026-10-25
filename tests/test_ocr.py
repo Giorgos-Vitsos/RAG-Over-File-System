@@ -32,23 +32,19 @@ READ_CASES = {
 }
 
 
-# the text of the picture comes out with its lines and paragraphs
+# the text of the picture comes out with its lines and paragraphs, the same every time
 @pytest.mark.parametrize("html, expected", READ_CASES.values(), ids=READ_CASES.keys())
 def test_ocr_image_reads_the_text(html, expected):
-    text, confidence = ocr_image(picture(html), OCRConfig())
+    image = picture(html)
+    text, confidence = ocr_image(image, OCRConfig())
     assert text == expected
     assert confidence >= 80
+    assert ocr_image(image, OCRConfig()) == (text, confidence)
 
 
 # a picture with nothing on it gives no text and no confidence
 def test_ocr_image_of_a_blank_picture():
     assert ocr_image(picture(""), OCRConfig()) == ("", 0.0)
-
-
-# a grey picture is read like a colour one
-def test_ocr_image_of_a_grey_picture():
-    html, expected = READ_CASES["greek with accents"]
-    assert ocr_image(picture(html, mode="L"), OCRConfig())[0] == expected
 
 
 # the languages come from the config: without Greek the Greek words are lost
@@ -69,10 +65,11 @@ def test_ocr_image_uses_the_folder_of_the_config(tmp_path):
         ocr_image(picture("The deadline is strict."), OCRConfig(tessdata_dir=str(tmp_path)))
 
 
-# the same picture always gives the same text
-def test_ocr_image_is_deterministic():
-    image = picture(READ_CASES["two paragraphs"][0])
-    assert ocr_image(image, OCRConfig()) == ocr_image(image, OCRConfig())
+# tesseract can give a box with only a space and a good confidence: it is not a word
+def test_ocr_image_skips_boxes_without_text(monkeypatch):
+    boxes = {"text": ["", " ", "Λέξη"], "conf": [-1, 95, 90], "block_num": [1, 1, 1], "par_num": [1, 1, 1], "line_num": [1, 1, 1]}
+    monkeypatch.setattr(pytesseract, "image_to_data", lambda *args, **kwargs: boxes)
+    assert ocr_image(picture(""), OCRConfig()) == ("Λέξη", 90.0)
 
 
 # the default config and the system models are ready to use
@@ -82,30 +79,18 @@ def test_check_ocr_accepts_installed_languages(folder):
 
 
 # a language or a folder that is not there stops before any file is read, and the message names it
-@pytest.mark.parametrize("config, named", [
-    pytest.param(dict(languages=["ell", "xyz"]), "xyz", id="missing language"),
-    pytest.param(dict(tessdata_dir="~/no/such/folder"), "no/such/folder", id="missing folder"),
-    pytest.param(dict(languages=[]), "language", id="no language"),
+@pytest.mark.parametrize("settings, named", [
+    pytest.param(lambda folder: dict(languages=["ell", "xyz"]), "xyz", id="missing language"),
+    pytest.param(lambda folder: dict(tessdata_dir="~/no/such/folder"), "no/such/folder", id="missing folder"),
+    pytest.param(lambda folder: dict(languages=[]), "language", id="no language"),
+    pytest.param(lambda folder: dict(tessdata_dir=str(folder)), "ell|language", id="folder without models"),
 ])
-def test_check_ocr_rejects(config, named):
+def test_check_ocr_rejects(tmp_path, settings, named):
     with pytest.raises(ValueError, match=named):
-        check_ocr(OCRConfig(**config))
+        check_ocr(OCRConfig(**settings(tmp_path)))
 
 
-# a folder that exists but has no models is rejected too
-def test_check_ocr_rejects_an_empty_folder(tmp_path):
-    with pytest.raises(ValueError, match="ell|language"):
-        check_ocr(OCRConfig(tessdata_dir=str(tmp_path)))
-
-
-# tesseract can give a box with only a space and a good confidence: it is not a word
-def test_ocr_image_skips_boxes_without_text(monkeypatch):
-    boxes = {"text": ["", " ", "Λέξη"], "conf": [-1, 95, 90], "block_num": [1, 1, 1], "par_num": [1, 1, 1], "line_num": [1, 1, 1]}
-    monkeypatch.setattr(pytesseract, "image_to_data", lambda *args, **kwargs: boxes)
-    assert ocr_image(picture(""), OCRConfig()) == ("Λέξη", 90.0)
-
-
-# ---------- step O2: image files through parse_file ----------
+# ---------- image files through parse_file ----------
 
 SENTENCE = READ_CASES["greek with accents"][0]
 
@@ -119,29 +104,41 @@ def parse_picture(tmp_path, name, image, ocr=None, **save):
     return parse_file(scanned) if ocr is None else parse_file(scanned, ocr)
 
 
-# every image format is read by OCR and gets the status ocr
+# a quick stand-in for tesseract: it reads SENTENCE only from dark text on a white RGB picture, and keeps what it got
+@pytest.fixture
+def fake_ocr(monkeypatch):
+    calls = []
+
+    def read(image, ocr):
+        calls.append((image, ocr))
+        pixels = numpy.array(image.convert("L"))
+        dark, white = (pixels < 160).mean(), (pixels > 200).mean()
+        readable = image.mode == "RGB" and 0 < dark < 0.5 and white > 0.5
+        return (SENTENCE, 95.0) if readable else ("", 0.0)
+
+    monkeypatch.setattr(ocr_module, "ocr_image", read)
+    return calls
+
+
+# a real picture file goes through the real OCR, and the µ that the ell model writes for μ is turned back (D69)
+def test_parse_file_reads_an_image(tmp_path):
+    text = "Το εργαστήριο του μαθήματος είναι σε Java."
+    doc = parse_picture(tmp_path, "lab.png", picture(text))
+    assert (doc.parse_status, doc.content_type, doc.raw_text) == ("ocr", "prose", text)
+
+
+# every image format opens and gets the status ocr
 @pytest.mark.parametrize("name", ["page.png", "page.jpg", "page.jpeg", "page.bmp", "page.gif", "page.webp", "page.tif",
                                   "page.tiff", "PAGE.PNG"])
-def test_parse_file_reads_image_files(tmp_path, name):
+def test_parse_file_reads_image_files(tmp_path, fake_ocr, name):
     doc = parse_picture(tmp_path, name, picture(SENTENCE))
     assert (doc.parse_status, doc.content_type, doc.raw_text) == ("ocr", "prose", SENTENCE)
 
 
-# the ell model writes µ for μ, parse_file turns it back (D69)
-def test_parse_file_fixes_the_micro_sign_of_ocr(tmp_path):
-    text = "Το εργαστήριο του μαθήματος είναι σε Java."
-    assert parse_picture(tmp_path, "lab.png", picture(text)).raw_text == text
-
-
-# the OCR settings given to parse_file are used: without Greek the Greek words are lost
-def test_parse_file_passes_the_ocr_config(tmp_path):
-    doc = parse_picture(tmp_path, "page.png", picture(SENTENCE), OCRConfig(languages=["eng"]))
-    assert "εργασίες" not in doc.raw_text
-
-
-# pictures with no text, or with nothing readable, are empty
-def test_parse_file_blank_picture_is_empty(tmp_path):
-    assert parse_picture(tmp_path, "blank.png", picture("")).parse_status == "empty"
+# the OCR settings given to parse_file reach the OCR
+def test_parse_file_passes_the_ocr_config(tmp_path, fake_ocr):
+    parse_picture(tmp_path, "page.png", picture(SENTENCE), OCRConfig(languages=["eng"]))
+    assert [ocr.languages for _, ocr in fake_ocr] == [["eng"]]
 
 
 # a broken image file is failed, like any broken file
@@ -186,8 +183,8 @@ def test_parse_file_small_pictures(tmp_path, monkeypatch, size, settings, status
     assert doc.parse_status == status
 
 
-# read_image says if OCR ran: a small picture is not read at all
-def test_read_image_says_if_ocr_ran(tmp_path):
+# read_image says if text from OCR was kept: a small picture is not read at all
+def test_read_image_says_if_ocr_was_kept(tmp_path, fake_ocr):
     big, small = tmp_path / "big.png", tmp_path / "small.png"
     picture(SENTENCE).save(big)
     Image.new("RGB", (50, 50), "white").save(small)
@@ -222,9 +219,9 @@ MODE_CASES = {
 }
 
 
-# every colour mode ends up as dark text on white
+# every colour mode reaches the OCR as dark text on white
 @pytest.mark.parametrize("make, name, save", MODE_CASES.values(), ids=MODE_CASES.keys())
-def test_parse_file_reads_every_colour_mode(tmp_path, make, name, save):
+def test_parse_file_reads_every_colour_mode(tmp_path, fake_ocr, make, name, save):
     assert parse_picture(tmp_path, name, make(), **save).raw_text == SENTENCE
 
 
@@ -236,18 +233,12 @@ def test_parse_file_turns_photos_like_the_exif_says(tmp_path):
     assert parse_picture(tmp_path, "photo.jpg", sideways, exif=exif).raw_text == SENTENCE
 
 
-# a scanned tiff keeps every page, a gif only its first frame
+# a scanned tiff keeps every page and skips a small one in the middle, a gif keeps only its first frame
 @pytest.mark.parametrize("name, expected", [
     ("scan.tif", "Οι εργασίες της πρώτης σελίδας\n\nΟι ασκήσεις της δεύτερης σελίδας"),
     ("moving.gif", "Οι εργασίες της πρώτης σελίδας"),
 ])
 def test_parse_file_pictures_with_many_frames(tmp_path, name, expected):
     first, second = picture("Οι εργασίες της πρώτης σελίδας"), picture("Οι ασκήσεις της δεύτερης σελίδας")
-    assert parse_picture(tmp_path, name, first, save_all=True, append_images=[second]).raw_text == expected
-
-
-# a small page in the middle of a scan is skipped, the pages after it are still read
-def test_parse_file_tiff_with_a_small_page(tmp_path):
-    first, last = picture("Οι εργασίες της πρώτης σελίδας"), picture("Οι ασκήσεις της δεύτερης σελίδας")
-    doc = parse_picture(tmp_path, "scan.tif", first, save_all=True, append_images=[Image.new("RGB", (100, 100), "white"), last])
-    assert doc.raw_text == "Οι εργασίες της πρώτης σελίδας\n\nΟι ασκήσεις της δεύτερης σελίδας"
+    frames = [second] if name.endswith(".gif") else [Image.new("RGB", (100, 100), "white"), second]
+    assert parse_picture(tmp_path, name, first, save_all=True, append_images=frames).raw_text == expected
