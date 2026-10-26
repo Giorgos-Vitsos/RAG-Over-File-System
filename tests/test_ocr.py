@@ -332,3 +332,64 @@ def test_parse_file_does_not_fix_lookalikes_outside_ocr(tmp_path):
     root.mkdir()
     (root / "notes.txt").write_text(text, encoding="utf-8")
     assert parse_file(scan(CorpusConfig(roots=[root])).files[0]).raw_text == text
+
+
+
+TURNED = "<p>Η εργασία του μαθήματος παραδίδεται στις 12 Μαρτίου.</p><p>The report is uploaded to the system.</p>"
+
+
+# a page turned on its side or upside down is read like the straight page
+@pytest.mark.parametrize("angle", [90, 180, 270])
+def test_ocr_image_reads_a_turned_page(angle):
+    image = picture(TURNED, height=400)
+    text, confidence = ocr_image(image.rotate(angle, expand=True), OCRConfig())
+    assert (text, confidence) == ocr_image(image, OCRConfig())
+
+
+# an upside down scan in the corpus gets its text
+def test_parse_file_reads_an_upside_down_image(tmp_path):
+    text = "Το εργαστήριο του μαθήματος είναι σε Java."
+    doc = parse_picture(tmp_path, "lab.png", picture(text).rotate(180))
+    assert (doc.parse_status, doc.raw_text) == ("ocr", text)
+
+
+# a stand-in for tesseract: one word per call, from the list, and the pictures it was given
+@pytest.fixture
+def fake_tesseract(monkeypatch):
+    seen = {"answers": [], "images": []}
+
+    def read(image, *args, **kwargs):
+        seen["images"].append(image)
+        word, conf = seen["answers"][len(seen["images"]) - 1]
+        return {"text": [word], "conf": [conf], "block_num": [1], "par_num": [1], "line_num": [1]}
+
+    monkeypatch.setattr(pytesseract, "image_to_data", read)
+    return seen
+
+
+# (answers of tesseract, min_confidence, result, calls)
+TURN_CASES = {
+    "confident page is read once": ([("Ευθεία", 90)], 60, ("Ευθεία", 90.0), 1),
+    "confidence at the limit is read once": ([("Ευθεία", 60)], 60, ("Ευθεία", 60.0), 1),
+    "low confidence tries the turned page": ([("Λάθος", 59), ("Ευθεία", 90)], 60, ("Ευθεία", 90.0), 2),
+    "turned page is worse": ([("Λάθος", 50), ("Χειρότερο", 40)], 60, ("Λάθος", 50.0), 2),
+    "turned page is as good": ([("Ευθεία", 50), ("Ανάποδα", 50)], 60, ("Ευθεία", 50.0), 2),
+    "limit from the config": ([("Λάθος", 90), ("Ευθεία", 95)], 92, ("Ευθεία", 95.0), 2),
+}
+
+
+# a page is turned only when tesseract is not confident, and the better of the two readings is kept
+@pytest.mark.parametrize("answers, limit, expected, calls", TURN_CASES.values(), ids=TURN_CASES.keys())
+def test_ocr_image_turns_only_unsure_pages(fake_tesseract, answers, limit, expected, calls):
+    fake_tesseract["answers"] = answers
+    assert ocr_image(picture(""), OCRConfig(min_confidence=limit)) == expected
+    assert len(fake_tesseract["images"]) == calls
+
+
+# the second try is the picture upside down: tesseract reads pages on their side by itself only one way,
+# and upside down makes the other side that way
+def test_ocr_image_second_try_is_upside_down(fake_tesseract):
+    fake_tesseract["answers"] = [("Λάθος", 30), ("Ευθεία", 90)]
+    image = picture("Σελίδα")
+    ocr_image(image, OCRConfig())
+    assert fake_tesseract["images"][1].tobytes() == image.rotate(180).tobytes()

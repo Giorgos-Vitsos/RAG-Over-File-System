@@ -28,6 +28,15 @@ def check_ocr(ocr: OCRConfig):
         raise ValueError("OCR has none installed languages")
 
 def ocr_image(image,ocr:OCRConfig)->tuple[str,float]:
+    original=parse_ocr_image(image,ocr)
+    if original[1]>=ocr.min_confidence:
+        return original
+    rotated=parse_ocr_image(image.rotate(180),ocr)#we try to rotate to be read better
+    if rotated[1]>original[1]:#we keep the best
+        return rotated
+    return original
+
+def parse_ocr_image(image,ocr:OCRConfig)->tuple[str,float]:
     paragraphs={}
     confidences=[]
     if ocr.tessdata_dir:
