@@ -4,13 +4,13 @@ from pathlib import Path
 import pymupdf
 from collections import Counter
 from .tabular import format_rows
-from .ocr import ocr_image
+from .ocr import ocr_image,edge_key,drop_repeated_edges
 from PIL import Image
 from rag_fs.config import OCRConfig
+
 LIGATURE=re.compile("[\ufb00-\ufb06]")#one character for two or three letters
 BROKEN_WORD=re.compile(r"(\w+)-\n(\w+)")#a word cut by a hyphen at the end of a line
 WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
-NUMBER=re.compile(r"\d+")
 EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut
@@ -18,6 +18,7 @@ CHAR_COUNT_OCR_FLAG=50
 
 def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
     ocr_flag=False
+    scanned=[]#OCR parsed page indexes
     with pymupdf.open(path) as file:
         if file.needs_pass:#if its password protected
             raise ValueError(f"The pdf {path} is password protected and cant be parsed")
@@ -63,9 +64,22 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
             for block in ocr_blocks:
                 new_blocks.append((block,None))
             pages[index]=new_blocks#we swap the block for the ocr one
+            scanned.append(index)
             ocr_flag=True
         slides=is_slides(file)
         bookmarks=file.get_toc()
+    texts=[]
+    for index in scanned:
+        page_texts=[]
+        for text,rows in pages[index]:
+            page_texts.append(text)
+        texts.append(page_texts)
+    texts = drop_repeated_edges(texts)#we remove the headers from all the ocr scanned
+    for index,paragraphs in zip(scanned,texts):#we stich them again
+        temp_paragraphs=[]
+        for paragraph in paragraphs:
+            temp_paragraphs.append((paragraph,None))
+        pages[index]=temp_paragraphs
     titles=add_headings(pages,bookmarks,slides)
     words=get_words(pages)
     output=[]
@@ -154,9 +168,6 @@ def drop_headers(pages:list[tuple[float,list[tuple[float,float,str,list[list[str
 
 def on_edge(top: float,bottom: float,height: float)->bool:
     return bottom<EDGE*height or top>(1-EDGE)*height
-
-def edge_key(text: str)->str:
-    return NUMBER.sub("#"," ".join(text.split()).lower())#different pages give the same key if the dig is the only difference
 
 def table_at(block,tables: list[tuple[tuple,list[list[str]]]])->int|None:#to avoid duplicates from tables and normal text parsing
     x=(block[0]+block[2])/2

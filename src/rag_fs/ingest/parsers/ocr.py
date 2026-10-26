@@ -2,6 +2,10 @@ from ...config import OCRConfig
 from pathlib import Path
 import pytesseract
 from PIL import Image, ImageOps, ImageSequence
+import re
+from collections import Counter
+
+NUMBER=re.compile(r"\d+")
 
 def check_ocr(ocr: OCRConfig):
     if not ocr.languages:
@@ -67,7 +71,45 @@ def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
             if confidence<ocr.min_confidence or len(text.strip())<ocr.min_chars:
                 continue
             ocr_results.append(text)
+        pages=[]
+        for text in ocr_results:
+            pages.append(text.split("\n\n"))
+        pages=drop_repeated_edges(pages)#we remove headers that repeat
+        clean_ocr_result=[]
+        for paragraphs in pages:
+            if paragraphs:
+                clean_ocr_result.append("\n\n".join(paragraphs))
+        ocr_results=clean_ocr_result
         if ocr_results:
             return "\n\n".join(ocr_results),True
         else:
             return "",False
+
+def edge_key(text: str)->str:
+    return NUMBER.sub("#"," ".join(text.split()).lower())#different pages give the same key if the dig is the only difference
+
+def drop_repeated_edges(pages:list[list[str]])->list[list[str]]:
+    if len(pages)<3:#not enough pages to find headers
+        return pages
+    counter=Counter()
+    for paragraphs in pages:
+        if len(paragraphs)<2:
+            continue
+        keys=set()
+        for index,text in enumerate(paragraphs):
+            if index<2 or index >=len(paragraphs)-2:
+                keys.add(edge_key(text))
+        counter.update(keys)
+    repeated=set()
+    for key,count in counter.items():
+        if count>=len(pages)/2:
+            repeated.add(key)
+    output=[]
+    for paragraphs in pages:
+        kept=[]
+        for index,text in enumerate(paragraphs):
+            if edge_key(text) in repeated and (index<2 or index >=len(paragraphs)-2):#we drop edges that repeat
+                continue
+            kept.append(text)
+        output.append(kept)
+    return output
