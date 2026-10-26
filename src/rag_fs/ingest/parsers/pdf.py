@@ -41,7 +41,7 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
                 if index not in placed:
                     blocks.append((box[1],box[3],"",rows))
             pages.append((page.rect.height, blocks))
-        pages=drop_headers(pages)#we remove the noise data
+        pages,titles=drop_headers(pages)#we remove the noise data
         for index,page in enumerate(file.pages()):#we check for ocr inside the pdf page
             blocks=pages[index]
             char_count=0
@@ -74,12 +74,23 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
         for text,rows in pages[index]:
             page_texts.append(text)
         texts.append(page_texts)
-    texts = drop_repeated_edges(texts)#we remove the headers from all the ocr scanned
+    texts,ocr_titles = drop_repeated_edges(texts)#we remove the headers from all the ocr scanned
     for index,paragraphs in zip(scanned,texts):#we stich them again
         temp_paragraphs=[]
         for paragraph in paragraphs:
             temp_paragraphs.append((paragraph,None))
         pages[index]=temp_paragraphs
+    for index,text in ocr_titles:
+        titles.append((scanned[index],text))
+    kept_titles=[]
+    restored=set()
+    for page_index,text in sorted(titles,key=lambda title:title[0]):#we sort so that we correctly locate the first appearance
+        if edge_key(text) in restored:#already found             
+            continue
+        restored.add(edge_key(text))
+        kept_titles.append((page_index,text))
+    for page_index,text in reversed(kept_titles):
+        pages[page_index].insert(0,(text,None)) 
     titles=add_headings(pages,bookmarks,slides)
     words=get_words(pages)
     output=[]
@@ -144,13 +155,15 @@ def join_broken(word1:str,word2:str,words:set[str])->str:
         return hyphenated
     return joined
 
-def drop_headers(pages:list[tuple[float,list[tuple[float,float,str,list[list[str]]|None]]]])->list[list[tuple[str,list[list[str]]|None]]]:
+def drop_headers(pages:list[tuple[float,list[tuple[float,float,str,list[list[str]]|None]]]])->tuple[list[list[tuple[str,list[list[str]]|None]]],list[tuple[int,str]]]:
     counter=Counter()
+    variants={}
     for height,blocks in pages:
         keys=set()
         for top,bottom,text,rows in blocks:
             if rows is None and on_edge(top,bottom,height):#table cant be header
                 keys.add(edge_key(text))
+                variants.setdefault(edge_key(text),set()).add(" ".join(text.split()).lower())
         counter.update(keys)
     repeated=set()
     if len(pages)>=3:#pdfs with less than 3 pages are not good candidates
@@ -158,13 +171,18 @@ def drop_headers(pages:list[tuple[float,list[tuple[float,float,str,list[list[str
             if count>=len(pages)/2:
                 repeated.add(key)
     output=[]
-    for height,blocks in pages:#we pass again and remove the repeating ones
+    titles=[]
+    seen=set()
+    for page_index,(height,blocks) in enumerate(pages):#we pass again and remove the repeating ones
         kept_texts=[]
         for top,bottom,text,rows in blocks:
             if rows is not None or not on_edge(top,bottom,height) or not edge_key(text) in repeated:#we alway keep tables and not headers
                 kept_texts.append((text,rows))
+            elif len(variants[edge_key(text)])==1 and edge_key(text) not in seen:
+                seen.add(edge_key(text))
+                titles.append((page_index,text))
         output.append(kept_texts)
-    return output
+    return output,titles
 
 def on_edge(top: float,bottom: float,height: float)->bool:
     return bottom<EDGE*height or top>(1-EDGE)*height

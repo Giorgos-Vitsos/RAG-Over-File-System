@@ -134,24 +134,27 @@ def edges_pdf(tmp_path, bodies, headers=None, footers=None, size=PORTRAIT):
     return pdf_text(f)
 
 
+
 THREE = ["<p>Α</p>", "<p>Β</p>", "<p>Γ</p>"]
 
 # (bodies, headers, footers, text)
 EDGE_CASES = {
     "page x of y footer": (THREE, None, ["<p>Σελίδα {n} από 3</p>"] * 3, "Α\n\nΒ\n\nΓ"),
     "page number alone": (THREE, None, ["<p>{n}</p>"] * 3, "Α\n\nΒ\n\nΓ"),
-    "header on every page": (THREE, ["<p>ΗΥ-340 Μεταφραστές</p>"] * 3, None, "Α\n\nΒ\n\nΓ"),
-    "header and footer": (THREE, ["<p>ΗΥ-340</p>"] * 3, ["<p>- {n} -</p>"] * 3, "Α\n\nΒ\n\nΓ"),
+    "header on every page comes back once": (
+        THREE, ["<p>ΗΥ-340 Μεταφραστές</p>"] * 3, None, "ΗΥ-340 Μεταφραστές\n\nΑ\n\nΒ\n\nΓ"),
+    "the header comes back, the changing page number does not": (
+        THREE, ["<p>ΗΥ-340</p>"] * 3, ["<p>- {n} -</p>"] * 3, "ΗΥ-340\n\nΑ\n\nΒ\n\nΓ"),
     "spaces and capitals do not matter": (
         THREE, ["<p>ΗΥ-340 Μεταφραστές</p>", "<p>ΗΥ-340&nbsp; Μεταφραστές</p>", "<p>ηυ-340 μεταφραστές</p>"], None,
-        "Α\n\nΒ\n\nΓ"),
+        "ΗΥ-340 Μεταφραστές\n\nΑ\n\nΒ\n\nΓ"),
     "footer on half of the pages": (
-        THREE + ["<p>Δ</p>"], None, ["<p>Πρόχειρο</p>", None, "<p>Πρόχειρο</p>", None], "Α\n\nΒ\n\nΓ\n\nΔ"),
+        THREE + ["<p>Δ</p>"], None, ["<p>Πρόχειρο</p>", None, "<p>Πρόχειρο</p>", None], "Πρόχειρο\n\nΑ\n\nΒ\n\nΓ\n\nΔ"),
     "page with only a footer becomes empty": (
         ["<p>Α</p>", "", "<p>Γ</p>"], None, ["<p>{n}</p>"] * 3, "Α\n\nΓ"),
     "header text in the body is kept": (
         ["<p>Το ΗΥ-340 είναι μάθημα.</p>", "<p>ΗΥ-340</p>", "<p>Γ</p>"], ["<p>ΗΥ-340</p>"] * 3, None,
-        "Το ΗΥ-340 είναι μάθημα.\n\nΗΥ-340\n\nΓ"),
+        "ΗΥ-340\n\nΤο ΗΥ-340 είναι μάθημα.\n\nΗΥ-340\n\nΓ"),
 }
 
 
@@ -468,6 +471,8 @@ def fake_ocr(monkeypatch):
 
     def read(image, ocr):
         fake["calls"].append((image, ocr))
+        if isinstance(fake["answer"], list):  # one answer for each page, in order
+            return fake["answer"].pop(0)
         return fake["answer"]
 
     monkeypatch.setattr(pdf_module, "ocr_image", read)
@@ -519,8 +524,9 @@ def test_read_pdf_page_of_lines_only(tmp_path, fake_ocr):
 
 # a long watermark on every scanned page is a header: once it is removed the page is empty and is read by OCR
 def test_read_pdf_scans_with_a_watermark(tmp_path, fake_ocr):
+    fake_ocr["answer"] = [(f"Σελίδα {word} του σκαναρίσματος.", 95.0) for word in ["πρώτη", "δεύτερη", "τρίτη"]]
     text, used = scan_pdf(tmp_path, [[(0.02, 0.07, WATERMARK), (0.2, 0.5, SCAN)]] * 3)
-    assert used and text.count(FOUND[0]) == 3
+    assert used and text.count("του σκαναρίσματος") == 3
 
 
 # the bookmark title is found in the text that OCR gave
@@ -552,3 +558,110 @@ def test_parse_file_scanned_pdf(tmp_path):
 @pytest.mark.parametrize("ext", [".pdf", ".xps", ".oxps"])
 def test_pdf_is_an_ocr_reader(ext):
     assert OCR_PARSERS[ext] is read_pdf and ext not in PARSERS
+
+
+
+BODIES = ["Το πρώτο κεφάλαιο ξεκινάει εδώ.", "Η δεύτερη σελίδα συνεχίζει το θέμα.", "Η τρίτη σελίδα έχει ένα παράδειγμα.",
+          "Η τέταρτη σελίδα κλείνει το κεφάλαιο."]
+UNI = "Πανεπιστήμιο Κρήτης"
+DEPT = "Τμήμα Επιστήμης Υπολογιστών"
+NOTE = "Σημείωση για όλες τις ασκήσεις"
+# pages of five paragraphs, each paragraph different on every page
+LONG = [f"Α {w}.\n\nΒ {w}.\n\nΓ {w}.\n\nΔ {w}.\n\nΕ {w}." for w in ["άλφα", "βήτα", "γάμμα", "δέλτα"]]
+MIDDLE = [f"Αρχή {w}\n\nΣυνέχεια {w}\n\n{NOTE}\n\nΠαράδειγμα {w}\n\nΤέλος {w}" for w in ["άλφα", "βήτα", "γάμμα", "δέλτα"]]
+
+
+# a scanned pdf of one picture per page; the fake OCR gives the text of each page, in order
+def scanned_book(tmp_path, fake_ocr, pages, text_pages=()):
+    fake_ocr["answer"] = [(text, 95.0) for i, text in enumerate(pages) if i not in text_pages]
+    layout = [[(0.2, 0.5, f"<p>{pages[i]}</p>")] if i in text_pages else [(0.2, 0.5, SCAN)] for i in range(len(pages))]
+    return scan_pdf(tmp_path, layout)[0]
+
+
+# (text of each scanned page, text after read_pdf)
+OCR_HEADER_CASES = {
+    "book title on top": (
+        [f"Αλγόριθμοι και Δομές Δεδομένων\n\n{b}" for b in BODIES], "Αλγόριθμοι και Δομές Δεδομένων\n\n" + "\n\n".join(BODIES)),
+    "page number at the bottom": ([f"{b}\n\n{n}" for n, b in enumerate(BODIES, 12)], "\n\n".join(BODIES)),
+    "header and page number with words": pytest.param(
+        [f"ΚΕΦΑΛΑΙΟ 2\n\n{b}\n\nΣελίδα {n}" for n, b in enumerate(BODIES, 1)], "ΚΕΦΑΛΑΙΟ 2\n\n" + "\n\n".join(BODIES)),
+    "two header lines": pytest.param(
+        [f"{UNI}\n\n{DEPT}\n\n{b}" for b in BODIES], f"{UNI}\n\n{DEPT}\n\n" + "\n\n".join(BODIES)),
+    "watermark at the bottom comes back once, at the top": (
+        [f"{b}\n\nΣαρώθηκε με την εφαρμογή ScanApp" for b in BODIES], "Σαρώθηκε με την εφαρμογή ScanApp\n\n" + "\n\n".join(BODIES)),
+    "two header lines above a long page": pytest.param(
+        [f"{UNI}\n\n{DEPT}\n\n{b}" for b in LONG], f"{UNI}\n\n{DEPT}\n\n" + "\n\n".join(LONG)),
+    "two footer lines below a long page": (
+        [f"{b}\n\n{UNI}\n\n{DEPT}" for b in LONG], f"{UNI}\n\n{DEPT}\n\n" + "\n\n".join(LONG)),
+    "the header is also in the middle of a page: that one stays": (
+        [f"{DEPT}\n\n{b}".replace("Β ", f"{DEPT}\n\nΒ ") for b in LONG],
+        f"{DEPT}\n\n" + "\n\n".join(b.replace("Β ", f"{DEPT}\n\nΒ ") for b in LONG)),
+    "a blank page with only the header loses it": (
+        [f"{DEPT}\n\n{b}" for b in BODIES[:3]] + [DEPT], f"{DEPT}\n\n" + "\n\n".join(BODIES[:3])),
+    "header on half of the pages": (
+        [f"Αλγόριθμοι και Δομές Δεδομένων\n\n{b}" if i % 2 else b for i, b in enumerate(BODIES)],
+        f"{BODIES[0]}\n\nΑλγόριθμοι και Δομές Δεδομένων\n\n" + "\n\n".join(BODIES[1:])),
+}
+
+
+# lines that repeat at the top or the bottom of the scanned pages are headers and footers, like in P2
+@pytest.mark.parametrize("pages, expected", OCR_HEADER_CASES.values(), ids=OCR_HEADER_CASES.keys())
+def test_read_pdf_drops_headers_of_scanned_pages(tmp_path, fake_ocr, pages, expected):
+    assert scanned_book(tmp_path, fake_ocr, pages) == expected
+
+
+# (text of each scanned page, text after read_pdf) where nothing may be removed
+OCR_KEPT_CASES = {
+    "repeated in the middle of the page stays": (MIDDLE, "\n\n".join(MIDDLE)),
+    "on fewer than half of the pages it stays": (
+        [f"Αλγόριθμοι και Δομές Δεδομένων\n\n{b}" if i == 0 else b for i, b in enumerate(BODIES)],
+        "Αλγόριθμοι και Δομές Δεδομένων\n\n" + "\n\n".join(BODIES)),
+    "copies of the same one paragraph page stay": (["Αίτηση εγγραφής στο εργαστήριο"] * 3, "\n\n".join(["Αίτηση εγγραφής στο εργαστήριο"] * 3)),
+    "a line twice on one page counts once": (
+        [f"Αλγόριθμοι και Δομές Δεδομένων\n\n{b}\n\nΑλγόριθμοι και Δομές Δεδομένων" if i == 0 else b for i, b in enumerate(BODIES)],
+        "Αλγόριθμοι και Δομές Δεδομένων\n\n" + BODIES[0] + "\n\nΑλγόριθμοι και Δομές Δεδομένων\n\n" + "\n\n".join(BODIES[1:])),
+    "one paragraph pages do not count": (
+        [DEPT] * 3 + [f"{DEPT}\n\n{b}" for b in BODIES[:2]], "\n\n".join([DEPT] * 3 + [f"{DEPT}\n\n{b}" for b in BODIES[:2]])),
+    "only two scanned pages: nothing is removed": (
+        [f"Αλγόριθμοι και Δομές Δεδομένων\n\n{b}" for b in BODIES[:2]],
+        "\n\n".join(f"Αλγόριθμοι και Δομές Δεδομένων\n\n{b}" for b in BODIES[:2])),
+}
+
+
+# a line repeated in the middle of the page, on too few pages, or in a pdf with too few scanned pages is not a header
+@pytest.mark.parametrize("pages, expected", OCR_KEPT_CASES.values(), ids=OCR_KEPT_CASES.keys())
+def test_read_pdf_keeps_lines_that_are_not_headers(tmp_path, fake_ocr, pages, expected):
+    assert scanned_book(tmp_path, fake_ocr, pages) == expected
+
+
+# only the scanned pages are counted: a text page with the same line keeps it
+def test_read_pdf_ocr_headers_only_on_scanned_pages(tmp_path, fake_ocr):
+    title = "Αλγόριθμοι και Δομές Δεδομένων"
+    pages = [f"{title}. Πρόλογος του βιβλίου."] + [f"{title}\n\n{b}" for b in BODIES[1:]]
+    text = scanned_book(tmp_path, fake_ocr, pages, text_pages={0})
+    assert text == f"{title}. Πρόλογος του βιβλίου.\n\n{title}\n\n" + "\n\n".join(BODIES[1:])
+
+
+# the watermark text of the pages comes back once and does not stop the OCR of the first page
+def test_read_pdf_watermark_comes_back_once(tmp_path, fake_ocr):
+    fake_ocr["answer"] = [(f"Σελίδα {word} του σκαναρίσματος.", 95.0) for word in ["πρώτη", "δεύτερη", "τρίτη"]]
+    text, used = scan_pdf(tmp_path, [[(0.02, 0.07, WATERMARK), (0.2, 0.5, SCAN)]] * 3)
+    assert used and text.count("του σκαναρίσματος") == 3 and text.count("ScanApp") == 1
+
+
+# a title found both in the text of the pages and in the text of OCR comes back only once
+def test_read_pdf_title_from_text_and_ocr_comes_back_once(tmp_path, fake_ocr):
+    mark = "Σαρωμένο με την εφαρμογή ScanApp Pro, έκδοση 2.4 για Android"
+    fake_ocr["answer"] = [(f"{mark}\n\n{b}", 95.0) for b in BODIES[:3]]
+    text, _ = scan_pdf(tmp_path, [[(0.02, 0.07, WATERMARK), (0.2, 0.5, SCAN)]] * 3)
+    assert text == f"{mark}\n\n" + "\n\n".join(BODIES[:3])
+
+
+# the same title on scanned pages first and on text pages later comes back once, on the earliest page
+def test_read_pdf_title_comes_back_on_its_earliest_page(tmp_path, fake_ocr):
+    title = "Αλγόριθμοι και Δομές Δεδομένων"
+    fake_ocr["answer"] = [(f"{title}\n\n{b}", 95.0) for b in BODIES[:3]]
+    scanned = [[(0.2, 0.5, SCAN)]] * 3
+    typed = [[(0.03, 0.08, f"<p>{title}</p>"), (0.3, 0.4, f"<p>{word}</p>")] for word in ["Δ", "Ε", "Ζ"]]
+    text, _ = scan_pdf(tmp_path, scanned + typed)
+    assert text == f"{title}\n\n" + "\n\n".join(BODIES[:3] + ["Δ", "Ε", "Ζ"])

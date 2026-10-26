@@ -242,3 +242,41 @@ def test_parse_file_pictures_with_many_frames(tmp_path, name, expected):
     first, second = picture("Οι εργασίες της πρώτης σελίδας"), picture("Οι ασκήσεις της δεύτερης σελίδας")
     frames = [second] if name.endswith(".gif") else [Image.new("RGB", (100, 100), "white"), second]
     assert parse_picture(tmp_path, name, first, save_all=True, append_images=frames).raw_text == expected
+
+
+
+BOOK = "Αλγόριθμοι και Δομές Δεδομένων"
+PAGES = ["Το πρώτο κεφάλαιο ξεκινάει εδώ.", "Η δεύτερη σελίδα συνεχίζει το θέμα.", "Η τρίτη σελίδα έχει ένα παράδειγμα."]
+
+
+# a scanned tiff of three pages, with the text the OCR gives for each page in order
+def scanned_tiff(tmp_path, monkeypatch, texts):
+    answers = [(text, 95.0) for text in texts]
+    monkeypatch.setattr(ocr_module, "ocr_image", lambda image, ocr: answers.pop(0))
+    first = picture(SENTENCE)
+    return parse_picture(tmp_path, "book.tif", first, save_all=True, append_images=[first] * (len(texts) - 1)).raw_text
+
+
+# headers and page numbers repeated on the pages of a scanned tiff are removed, like in a scanned pdf
+def test_parse_file_drops_headers_of_a_scanned_tiff(tmp_path, monkeypatch):
+    texts = [f"{BOOK}\n\n{page}\n\n{n}" for n, page in enumerate(PAGES, 1)]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == f"{BOOK}\n\n" + "\n\n".join(PAGES)
+
+
+# a tiff of only two pages keeps everything
+def test_parse_file_two_page_tiff_keeps_its_lines(tmp_path, monkeypatch):
+    texts = [f"{BOOK}\n\n{page}" for page in PAGES[:2]]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == "\n\n".join(texts)
+
+
+# a blank page of the book has only its header and number: it leaves no empty paragraph behind
+def test_parse_file_tiff_page_of_only_a_header(tmp_path, monkeypatch):
+    texts = [f"{BOOK}\n\n{PAGES[0]}\n\n1", f"{BOOK}\n\n2", f"{BOOK}\n\n{PAGES[2]}\n\n3"]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == f"{BOOK}\n\n{PAGES[0]}\n\n{PAGES[2]}"
+
+
+# two title lines of a scanned tiff come back in their order, at the top
+def test_parse_file_tiff_with_two_title_lines(tmp_path, monkeypatch):
+    uni, dept = "Πανεπιστήμιο Κρήτης", "Τμήμα Επιστήμης Υπολογιστών"
+    texts = [f"{uni}\n\n{dept}\n\n{page}" for page in PAGES]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == f"{uni}\n\n{dept}\n\n" + "\n\n".join(PAGES)
