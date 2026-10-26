@@ -6,6 +6,8 @@ import re
 from collections import Counter
 
 NUMBER=re.compile(r"\d+")
+LOOKALIKE = str.maketrans("ABEZHIKMNOPTYXoviukxap", "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧονιυκχαρ")
+WORD = re.compile(r"\w+")
 
 def check_ocr(ocr: OCRConfig):
     if not ocr.languages:
@@ -122,3 +124,24 @@ def drop_repeated_edges(pages:list[list[str]])->tuple[list[list[str]],list[tuple
             kept.append(text)
         output.append(kept)
     return output,titles
+
+def is_greek(c: str) -> bool:
+    return "\u0370" <= c <= "\u03ff" or "\u1f00" <= c <= "\u1fff"
+
+def fix_lookalikes(text:str)->str:
+    words=set()
+    for w in WORD.findall(text):
+        w=w.lower()
+        if any(is_greek(c) for c in w):
+            words.add(w)
+    return WORD.sub(lambda match: fix_word(match.group(0),words),text)#fixes greek words broken from ocr
+
+def fix_word(word:str,words:set[str])->str:
+    has_greek_char=False
+    for c in word:
+        if is_greek(c):
+            has_greek_char=True
+    greek=word.translate(LOOKALIKE)
+    if greek.lower() in words or has_greek_char:
+        return greek
+    return word

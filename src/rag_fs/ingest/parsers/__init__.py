@@ -3,7 +3,7 @@ from rag_fs.models import Document
 from .text import read_text
 from .tabular import read_csv,read_xlsx,read_xls
 from .office import read_docx,read_word_variants,read_pptx,read_slide_variants,read_rtf
-from .ocr import read_image
+from .ocr import read_image,fix_lookalikes
 from .opendocument import read_ods,read_odf
 import logging
 from .markdown import read_markdown
@@ -95,6 +95,7 @@ def parse_file(scanned: ScannedFile,ocr:OCRConfig=OCRConfig())->Document:
     if text.strip()=="":
         return make_doc(ext,text,content_type_of(ext),"empty",scanned)
     if used:
+        text=fix_lookalikes(text)
         return make_doc(ext,text,content_type_of(ext),"ocr",scanned)
     else:
         return make_doc(ext,text,content_type_of(ext),"ok",scanned)

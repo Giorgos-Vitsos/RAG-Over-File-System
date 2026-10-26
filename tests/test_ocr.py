@@ -280,3 +280,55 @@ def test_parse_file_tiff_with_two_title_lines(tmp_path, monkeypatch):
     uni, dept = "Πανεπιστήμιο Κρήτης", "Τμήμα Επιστήμης Υπολογιστών"
     texts = [f"{uni}\n\n{dept}\n\n{page}" for page in PAGES]
     assert scanned_tiff(tmp_path, monkeypatch, texts) == f"{uni}\n\n{dept}\n\n" + "\n\n".join(PAGES)
+
+
+
+# (what the OCR read, text after parse_file)
+LOOKALIKE_CASES = {
+    "latin capital inside a greek word": ("Η προθεσμία είναι 12 Mαρτίου και ισχύει.", "Η προθεσμία είναι 12 Μαρτίου και ισχύει."),
+    "latin lower letter inside a greek word": ("Το μάθημα έχει εργαστήριo κάθε εβδομάδα.", "Το μάθημα έχει εργαστήριο κάθε εβδομάδα."),
+    "whole word in latin that the text has in greek": (
+        "Η εργασία KAI η άσκηση παραδίδονται και οι δύο.", "Η εργασία ΚΑΙ η άσκηση παραδίδονται και οι δύο."),
+    "article in latin": ("H εργασία παραδίδεται και η άσκηση επίσης.", "Η εργασία παραδίδεται και η άσκηση επίσης."),
+    "lower case word in latin": ("Η άσκηση και o φοιτητής, ο καθηγητής και ο βοηθός.",
+                                 "Η άσκηση και ο φοιτητής, ο καθηγητής και ο βοηθός."),
+    "greek word only with a capital in the text": ("Η εργασία KAI η άσκηση. Και οι δύο μαζί.", "Η εργασία ΚΑΙ η άσκηση. Και οι δύο μαζί."),
+    "polytonic word": ("Tὸ βιβλίον τῆς βιβλιοθήκης.", "Τὸ βιβλίον τῆς βιβλιοθήκης."),
+    "ordinal with digits": ("Το 1oς όροφος της σχολής.", "Το 1ος όροφος της σχολής."),
+}
+
+# (what the OCR read) where nothing may change
+LOOKALIKE_KEPT = {
+    "acronym that is not a greek word": "Η διεύθυνση IP του υπολογιστή και η πύλη.",
+    "acronym with other latin letters": "Το πρωτόκολλο TCP και το UDP της εργασίας.",
+    "english text": "The TOP five items of the list are here.",
+    "word with digits": "Το μόριο H2O και το νερό της άσκησης.",
+    "latin word with other latin letters inside greek text": "Η εργασία σε Java και η άσκηση σε Python.",
+}
+
+
+# OCR text through parse_file, with the fake OCR answer
+def parse_ocr_text(tmp_path, monkeypatch, text):
+    monkeypatch.setattr(ocr_module, "ocr_image", lambda image, ocr: (text, 95.0))
+    return parse_picture(tmp_path, "page.png", picture(SENTENCE))
+
+
+# Latin letters that look Greek are turned Greek, inside Greek words or when the Greek word is in the text
+@pytest.mark.parametrize("read, expected", LOOKALIKE_CASES.values(), ids=LOOKALIKE_CASES.keys())
+def test_parse_file_fixes_latin_lookalikes_of_ocr(tmp_path, monkeypatch, read, expected):
+    assert parse_ocr_text(tmp_path, monkeypatch, read).raw_text == expected
+
+
+# Latin words that are not Greek words stay as they are
+@pytest.mark.parametrize("read", LOOKALIKE_KEPT.values(), ids=LOOKALIKE_KEPT.keys())
+def test_parse_file_keeps_latin_words_of_ocr(tmp_path, monkeypatch, read):
+    assert parse_ocr_text(tmp_path, monkeypatch, read).raw_text == read
+
+
+# a text file is not OCR, so its Latin letters are left as they were written
+def test_parse_file_does_not_fix_lookalikes_outside_ocr(tmp_path):
+    text = "Η εργασία KAI η άσκηση παραδίδονται και οι δύο."
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "notes.txt").write_text(text, encoding="utf-8")
+    assert parse_file(scan(CorpusConfig(roots=[root])).files[0]).raw_text == text
