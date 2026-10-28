@@ -92,6 +92,20 @@ def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
         pages,titles=drop_repeated_edges(pages)#we remove headers that repeat
         for page_index,text in reversed(titles):#it keeps the correct order
             pages[page_index].insert(0,text)#we add the titles
+        pages_normalized=[]
+        for page in pages:#we normalize to match other file types
+            temp=[]
+            for paragraph in page:
+                temp.append((paragraph,None))#get_words needs tuple with the rows in case its a table, but here is none
+            pages_normalized.append(temp)
+        words=get_words(pages_normalized)
+        pages_new=[]
+        for page in pages:
+            temp=[]
+            for paragraph in page:
+                temp.append(fix_text_block(paragraph,words))
+            pages_new.append(temp)
+        pages=pages_new
         clean_ocr_result=[]
         for paragraphs in pages:
             if paragraphs:
