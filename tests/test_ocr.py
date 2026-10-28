@@ -455,3 +455,83 @@ def test_ocr_sample_of_few_pages(count):
 def test_ocr_sample_of_eleven_pages():
     sample, rest = ocr_sample(list(range(11)))
     assert len(set(sample)) == 10 and len(rest) == 1 and sorted(sample + rest) == list(range(11))
+
+
+# a page of a tiff told apart from the others by its grey, so the fake OCR knows which page it reads
+def grey_frame(frame, size=400):
+    return Image.new("RGB", (size, size), (20 + 5 * frame,) * 3)
+
+
+# the text of a page, with a letter and not a number, so it is not taken for a page number
+def frame_text(frame):
+    return f"Το κείμενο της σελίδας {chr(945 + frame)} του βιβλίου."
+
+
+# a stand-in for OCR that answers by page: text for the pages in "good", rubbish for the rest
+@pytest.fixture
+def ocr_by_frame(monkeypatch):
+    fake = {"good": set(), "calls": [], "title": ""}
+
+    def read(image, ocr):
+        frame = (image.getpixel((image.width // 2, image.height // 2))[0] - 20) // 5
+        fake["calls"].append(frame)
+        if frame in fake["good"]:
+            return fake["title"] + frame_text(frame), 95.0
+        return "χ;ζ ψ%ω", 30.0
+
+    monkeypatch.setattr(ocr_module, "ocr_image", read)
+    return fake
+
+
+# a tiff of scanned pages and, at the given places, pages too small to read
+def grey_tiff(tmp_path, count, small=()):
+    frames = [grey_frame(i, 100 if i in small else 400) for i in range(count)]
+    path = tmp_path / "book.tif"
+    frames[0].save(path, save_all=True, append_images=frames[1:], compression="tiff_lzw")
+    return read_image(path, OCRConfig())
+
+
+# a tiff where no page of the sample gives text: only the 10 pages of the sample, spread over the tiff, are read
+def test_read_image_tiff_stops_ocr_when_the_sample_has_no_text(tmp_path, ocr_by_frame):
+    assert grey_tiff(tmp_path, 30) == ("", False)
+    calls = ocr_by_frame["calls"]
+    assert len(calls) == 10 and len(set(calls)) == 10
+    assert min(calls) <= 2 and max(calls) >= 27
+
+
+# a tiff whose first 10 pages have no text still gets all its text, in order, every page read once
+def test_read_image_tiff_with_empty_first_pages(tmp_path, ocr_by_frame):
+    ocr_by_frame["good"] = set(range(10, 30))
+    assert grey_tiff(tmp_path, 30) == ("\n\n".join(frame_text(i) for i in range(10, 30)), True)
+    assert sorted(ocr_by_frame["calls"]) == list(range(30))
+
+
+# with 10 pages or fewer, every one is read once, in order
+@pytest.mark.parametrize("count", [1, 4, 10])
+def test_read_image_reads_every_page_of_a_short_tiff(tmp_path, ocr_by_frame, count):
+    assert grey_tiff(tmp_path, count) == ("", False)
+    assert ocr_by_frame["calls"] == list(range(count))
+
+
+# pages too small to read are not in the sample
+def test_read_image_tiff_sample_skips_small_pages(tmp_path, ocr_by_frame):
+    small = range(0, 24, 2)
+    assert grey_tiff(tmp_path, 24, small) == ("", False)
+    calls = ocr_by_frame["calls"]
+    assert len(calls) == 10 and len(set(calls)) == 10 and not set(calls) & set(small)
+
+
+# 11 pages: one page of the sample with text makes all 11 read, and the text keeps the order of the pages
+def test_read_image_tiff_one_page_of_the_sample_with_text_reads_all(tmp_path, ocr_by_frame):
+    ocr_by_frame["good"] = set(range(11))
+    assert grey_tiff(tmp_path, 11) == ("\n\n".join(frame_text(i) for i in range(11)), True)
+    assert sorted(ocr_by_frame["calls"]) == list(range(11))
+
+
+# a title on every page but the first comes back on the first page that has it, though the sample was read first
+def test_read_image_tiff_title_after_the_sample_goes_to_its_first_page(tmp_path, ocr_by_frame):
+    ocr_by_frame["good"] = set(range(1, 30))
+    ocr_by_frame["title"] = "Αλγόριθμοι και Δομές Δεδομένων\n\n"
+    text, _ = grey_tiff(tmp_path, 30)
+    assert text.startswith("Αλγόριθμοι και Δομές Δεδομένων\n\n" + frame_text(1))
+    assert text.count("Αλγόριθμοι") == 1

@@ -1,7 +1,7 @@
 from ...config import OCRConfig
 from pathlib import Path
 import pytesseract
-from PIL import Image, ImageOps, ImageSequence
+from PIL import Image, ImageOps
 import re
 from collections import Counter
 import unicodedata
@@ -69,24 +69,37 @@ def parse_ocr_image(image,ocr:OCRConfig)->tuple[str,float]:
 
 def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
     with Image.open(path) as img:
-        ocr_results=[]
+        text_by_page={}
         if path.suffix.lower() in (".tif", ".tiff"):
-            frames=ImageSequence.Iterator(img)
+            frames_count=getattr(img, "n_frames", 1)#we keep multiple frames
         else:
-            frames=[img]
-        for frame in frames:
-            frame=ImageOps.exif_transpose(frame)
-            if min(frame.size)<ocr.min_image_size:
+            frames_count=1
+        candidates=[]#for sampling
+        for index in range(frames_count):
+            img.seek(index)
+            if min(img.size)<ocr.min_image_size:
                 continue
-            if frame.mode.startswith("I;16"):
-                frame=frame.convert("I").point(lambda v: v * (1 / 256)).convert("L")
-            rgba = frame.convert("RGBA")#we convert all images to white background with bold text so its more visible
-            page = Image.new("RGB", rgba.size, "white")
-            page.paste(rgba, mask=rgba.getchannel("A"))
-            text=run_ocr(page,ocr)
-            if text is None:
-                continue
-            ocr_results.append(text)
+            candidates.append(index)
+        samples,rest=ocr_sample(candidates)
+        for group in (samples,rest):
+            if group is rest and not text_by_page:#if it failed with the samples we dont bother
+                break
+            for index in group:
+                img.seek(index)
+                curr_frame=ImageOps.exif_transpose(img)
+                if curr_frame.mode.startswith("I;16"):
+                    curr_frame=curr_frame.convert("I").point(lambda v: v * (1 / 256)).convert("L")
+                rgba = curr_frame.convert("RGBA")#we convert all images to white background with bold text so its more visible
+                page = Image.new("RGB", rgba.size, "white")
+                page.paste(rgba, mask=rgba.getchannel("A"))
+                text=run_ocr(page,ocr)
+                if text is None:
+                    continue
+                text_by_page[index]=text
+        keys_sorted=sorted(text_by_page)
+        ocr_results=[]
+        for i in keys_sorted:
+            ocr_results.append(text_by_page[i])
         pages=[]
         for text in ocr_results:
             pages.append(text.split("\n\n"))
