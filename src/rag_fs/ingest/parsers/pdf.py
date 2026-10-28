@@ -1,16 +1,11 @@
-import re
-import unicodedata
 from pathlib import Path
 import pymupdf
 from collections import Counter
 from .tabular import format_rows
-from .ocr import ocr_image,edge_key,drop_repeated_edges
+from .ocr import ocr_image,edge_key,drop_repeated_edges,get_words,fix_text_block
 from PIL import Image
 from rag_fs.config import OCRConfig
 
-LIGATURE=re.compile("[\ufb00-\ufb06]")#one character for two or three letters
-BROKEN_WORD=re.compile(r"(\w+)-\n(\w+)")#a word cut by a hyphen at the end of a line
-WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
 EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut
@@ -102,13 +97,13 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
             output.append(header)
         for text,rows in blocks:
             if rows is None:
-                text=pdf_text_block(text,words)
+                text=fix_text_block(text,words)
             else:
                 clean=[]
                 for row in rows:
                     clean_row=[]
                     for cell in row:
-                        clean_row.append(pdf_text_block(cell,words))
+                        clean_row.append(fix_text_block(cell,words))
                     clean.append(clean_row)
                 text=format_rows(clean)
             if text:
@@ -123,37 +118,6 @@ def is_slides(file)->bool:
     if landscape_counter>len(file)/2:#if most pages are landscape then its a slide
         return True
     return False
-
-def get_words(pages:  list[list[tuple[str,list[list[str]]|None]]])->set[str]:#it returns all words other than "-\n" connected
-    words=set()
-    for blocks in pages:
-        for text,rows in blocks:
-            if rows is None:
-                parts=[text]
-            else:
-                parts=[]
-                for row in rows:
-                    for cell in row:
-                        parts.append(cell)
-            for part in parts:
-                whole=BROKEN_WORD.sub(" ",part)
-                for word in WORD.findall(whole):
-                    words.add(word.lower())
-    return words
-
-def pdf_text_block(block:str,words:set[str])->str:
-    block=BROKEN_WORD.sub(lambda match: join_broken(match.group(1),match.group(2),words),block)#fixes broken words "-"
-    block=LIGATURE.sub(lambda match: unicodedata.normalize("NFKC",match.group()),block)#fixes combined symbols
-    return " ".join(block.split())
-
-def join_broken(word1:str,word2:str,words:set[str])->str:
-    joined=word1+word2
-    hyphenated=word1+"-"+word2
-    if not word2[0].islower():#if the second part starts with capital then definitly not a broken word
-        return hyphenated
-    if hyphenated.lower() in words and joined.lower() not in words:
-        return hyphenated
-    return joined
 
 def drop_headers(pages:list[tuple[float,list[tuple[float,float,str,list[list[str]]|None]]]])->tuple[list[list[tuple[str,list[list[str]]|None]]],list[tuple[int,str]]]:
     counter=Counter()

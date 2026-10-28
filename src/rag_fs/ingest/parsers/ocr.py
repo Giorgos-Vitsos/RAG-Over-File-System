@@ -4,7 +4,11 @@ import pytesseract
 from PIL import Image, ImageOps, ImageSequence
 import re
 from collections import Counter
+import unicodedata
 
+LIGATURE=re.compile("[\ufb00-\ufb06]")#one character for two or three letters
+BROKEN_WORD=re.compile(r"(\w+)-\n(\w+)")#a word cut by a hyphen at the end of a line
+HYPHENATED_WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
 NUMBER=re.compile(r"\d+")
 LOOKALIKE = str.maketrans("ABEZHIKMNOPTYXoviukxap", "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧονιυκχαρ")
 WORD = re.compile(r"\w+")
@@ -154,3 +158,34 @@ def fix_word(word:str,words:set[str])->str:
     if greek.lower() in words or has_greek_char:
         return greek
     return word
+
+def get_words(pages:  list[list[tuple[str,list[list[str]]|None]]])->set[str]:#it returns all words other than "-\n" connected
+    words=set()
+    for blocks in pages:
+        for text,rows in blocks:
+            if rows is None:
+                parts=[text]
+            else:
+                parts=[]
+                for row in rows:
+                    for cell in row:
+                        parts.append(cell)
+            for part in parts:
+                whole=BROKEN_WORD.sub(" ",part)
+                for word in HYPHENATED_WORD.findall(whole):
+                    words.add(word.lower())
+    return words
+
+def fix_text_block(block:str,words:set[str])->str:
+    block=BROKEN_WORD.sub(lambda match: join_broken(match.group(1),match.group(2),words),block)#fixes broken words "-"
+    block=LIGATURE.sub(lambda match: unicodedata.normalize("NFKC",match.group()),block)#fixes combined symbols
+    return " ".join(block.split())
+
+def join_broken(word1:str,word2:str,words:set[str])->str:
+    joined=word1+word2
+    hyphenated=word1+"-"+word2
+    if not word2[0].islower():#if the second part starts with capital then definitly not a broken word
+        return hyphenated
+    if hyphenated.lower() in words and joined.lower() not in words:
+        return hyphenated
+    return joined

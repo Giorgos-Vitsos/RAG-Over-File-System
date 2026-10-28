@@ -393,3 +393,44 @@ def test_ocr_image_second_try_is_upside_down(fake_tesseract):
     image = picture("Σελίδα")
     ocr_image(image, OCRConfig())
     assert fake_tesseract["images"][1].tobytes() == image.rotate(180).tobytes()
+
+
+
+STEP_O5D = pytest.mark.xfail(strict=True, reason="step O5: the text of pictures is not cleaned like a pdf yet")
+
+# (what the OCR read, text after parse_file)
+CLEAN_CASES = {
+    "lines of a paragraph": ("Πρώτη σειρά της παραγράφου\nκαι δεύτερη σειρά.", "Πρώτη σειρά της παραγράφου και δεύτερη σειρά."),
+    "spaces inside a line": ("Η εργασία   του μαθήματος.", "Η εργασία του μαθήματος."),
+    "word cut at the end of a line": ("Η εργασία παραδί-\nδεται αύριο.", "Η εργασία παραδίδεται αύριο."),
+    "word with a hyphen in the text": ("Στείλτε το e-\nmail σας. Το e-mail είναι υποχρεωτικό.",
+                                       "Στείλτε το e-mail σας. Το e-mail είναι υποχρεωτικό."),
+    "second part with a capital": ("Το λεξικό είναι Ελληνο-\nΑγγλικό.", "Το λεξικό είναι Ελληνο-Αγγλικό."),
+}
+
+
+# the lines of a paragraph join, and words cut at the end of a line join like in a pdf
+@STEP_O5D
+@pytest.mark.parametrize("read, expected", CLEAN_CASES.values(), ids=CLEAN_CASES.keys())
+def test_parse_file_cleans_the_text_of_a_picture(tmp_path, monkeypatch, read, expected):
+    assert parse_ocr_text(tmp_path, monkeypatch, read).raw_text == expected
+
+
+# paragraphs stay apart
+def test_parse_file_keeps_the_paragraphs_of_a_picture(tmp_path, monkeypatch):
+    read = "Η πρώτη παράγραφος της σελίδας.\n\nΗ δεύτερη παράγραφος της σελίδας."
+    assert parse_ocr_text(tmp_path, monkeypatch, read).raw_text == read
+
+
+# a word with a hyphen on one page of a tiff keeps its hyphen when it is cut on another page
+@STEP_O5D
+def test_parse_file_tiff_knows_the_words_of_every_page(tmp_path, monkeypatch):
+    texts = ["Το e-mail της σχολής.", "Στείλτε το e-\nmail σας."]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == "Το e-mail της σχολής.\n\nΣτείλτε το e-mail σας."
+
+
+# a title of two lines that repeats on every page comes back once, as one line
+@STEP_O5D
+def test_parse_file_tiff_title_of_two_lines(tmp_path, monkeypatch):
+    texts = [f"Πανεπιστήμιο\nΚρήτης\n\n{page}" for page in PAGES]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == "Πανεπιστήμιο Κρήτης\n\n" + "\n\n".join(PAGES)
