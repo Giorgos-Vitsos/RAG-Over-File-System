@@ -8,7 +8,7 @@ from rag_fs.config import CorpusConfig, OCRConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import ocr as ocr_module
 from rag_fs.ingest.parsers import parse_file
-from rag_fs.ingest.parsers.ocr import check_ocr, ocr_image, read_image
+from rag_fs.ingest.parsers.ocr import check_ocr, ocr_image, ocr_sample, read_image
 
 
 # a white picture with the html written on it, like a scanned page
@@ -429,3 +429,29 @@ def test_parse_file_tiff_knows_the_words_of_every_page(tmp_path, monkeypatch):
 def test_parse_file_tiff_title_of_two_lines(tmp_path, monkeypatch):
     texts = [f"Πανεπιστήμιο\nΚρήτης\n\n{page}" for page in PAGES]
     assert scanned_tiff(tmp_path, monkeypatch, texts) == "Πανεπιστήμιο Κρήτης\n\n" + "\n\n".join(PAGES)
+
+
+# 30 pages to read: the sample is 10 of them spread from start to end, the rest are the other 20 in order
+def test_ocr_sample_of_many_pages():
+    assert ocr_sample(list(range(30))) == ([0, 3, 6, 9, 12, 15, 18, 21, 24, 27],
+                                           [i for i in range(30) if i % 3])
+
+
+# the sample is of page numbers and not of places in the list
+def test_ocr_sample_gives_page_numbers():
+    candidates = [4, 9, 11, 12, 15, 20, 21, 22, 30, 31, 33, 40]
+    sample, rest = ocr_sample(candidates)
+    assert len(sample) == 10 and len(set(sample)) == 10 and set(sample) <= set(candidates)
+    assert sample[0] == 4 and sorted(sample + rest) == candidates and not set(sample) & set(rest)
+
+
+# 10 pages or fewer: every page is in the sample, once, and nothing is left
+@pytest.mark.parametrize("count", [0, 1, 4, 9, 10])
+def test_ocr_sample_of_few_pages(count):
+    assert ocr_sample(list(range(5, 5 + count))) == (list(range(5, 5 + count)), [])
+
+
+# 11 pages: 10 different pages in the sample, the one left in the rest
+def test_ocr_sample_of_eleven_pages():
+    sample, rest = ocr_sample(list(range(11)))
+    assert len(set(sample)) == 10 and len(rest) == 1 and sorted(sample + rest) == list(range(11))

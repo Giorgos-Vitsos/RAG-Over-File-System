@@ -12,6 +12,7 @@ HYPHENATED_WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
 NUMBER=re.compile(r"\d+")
 LOOKALIKE = str.maketrans("ABEZHIKMNOPTYXoviukxap", "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧονιυκχαρ")
 WORD = re.compile(r"\w+")
+OCR_SAMPLE=10
 
 def check_ocr(ocr: OCRConfig):
     if not ocr.languages:
@@ -82,8 +83,8 @@ def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
             rgba = frame.convert("RGBA")#we convert all images to white background with bold text so its more visible
             page = Image.new("RGB", rgba.size, "white")
             page.paste(rgba, mask=rgba.getchannel("A"))
-            text,confidence=ocr_image(page,ocr)
-            if confidence<ocr.min_confidence or len(text.strip())<ocr.min_chars:
+            text=run_ocr(page,ocr)
+            if text is None:
                 continue
             ocr_results.append(text)
         pages=[]
@@ -203,3 +204,22 @@ def join_broken(word1:str,word2:str,words:set[str])->str:
     if hyphenated.lower() in words and joined.lower() not in words:
         return hyphenated
     return joined
+
+def ocr_sample(candidates:list[int])->tuple[list[int],list[int]]:
+    samples=[]
+    rest=[]
+    if len(candidates)<=OCR_SAMPLE:
+        samples=candidates
+        return samples,rest
+    for i in range(OCR_SAMPLE):
+        samples.append(candidates[i*len(candidates)//OCR_SAMPLE])
+    for candidate in candidates:
+        if candidate not in samples:
+            rest.append(candidate)
+    return samples,rest
+
+def run_ocr(image,ocr:OCRConfig)->str|None:
+    text_ocr,confidence=ocr_image(image,ocr)
+    if confidence<ocr.min_confidence or len(text_ocr.strip())<ocr.min_chars:#ocr is not confident source
+        return None
+    return text_ocr

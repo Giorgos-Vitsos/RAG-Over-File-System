@@ -2,7 +2,7 @@ from pathlib import Path
 import pymupdf
 from collections import Counter
 from .tabular import format_rows
-from .ocr import ocr_image,edge_key,drop_repeated_edges,get_words,fix_text_block
+from .ocr import edge_key,drop_repeated_edges,get_words,fix_text_block,ocr_sample,run_ocr
 from PIL import Image
 from rag_fs.config import OCRConfig
 
@@ -37,6 +37,7 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
                     blocks.append((box[1],box[3],"",rows))
             pages.append((page.rect.height, blocks))
         pages,titles=drop_headers(pages)#we remove the noise data
+        candidates=[]#candidates for ocr
         for index,page in enumerate(file.pages()):#we check for ocr inside the pdf page
             blocks=pages[index]
             char_count=0
@@ -49,18 +50,26 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
                             char_count+=len(cell.strip())
             if char_count>=CHAR_COUNT_OCR_FLAG or not page.get_images():#no ocr needed
                 continue
-            pix = page.get_pixmap(dpi=ocr.dpi)#we create the image
-            image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            text_ocr,confidence=ocr_image(image,ocr)
-            if confidence<ocr.min_confidence or len(text_ocr.strip())<ocr.min_chars:#ocr is not confident source
-                continue
-            ocr_blocks=text_ocr.split("\n\n")
-            new_blocks=[]
-            for block in ocr_blocks:
-                new_blocks.append((block,None))
-            pages[index]=new_blocks#we swap the block for the ocr one
-            scanned.append(index)
-            ocr_flag=True
+            candidates.append(index)
+        samples,rest=ocr_sample(candidates)
+        for group in (samples,rest):
+            if group is rest and not scanned:#if no ocr images passed
+                break
+            for index in group:
+                page=file.load_page(index)
+                pix=page.get_pixmap(dpi=ocr.dpi)
+                image=Image.frombytes("RGB",(pix.width,pix.height),pix.samples)
+                text_ocr=run_ocr(image,ocr)
+                if text_ocr is None:
+                    continue
+                ocr_blocks=text_ocr.split("\n\n")
+                new_blocks=[]
+                for block in ocr_blocks:
+                    new_blocks.append((block,None))
+                pages[index]=new_blocks#we swap the block for the ocr one
+                scanned.append(index)
+                ocr_flag=True
+        scanned.sort()
         slides=is_slides(file)
         bookmarks=file.get_toc()
     texts=[]

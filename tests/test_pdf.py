@@ -6,7 +6,7 @@ from PIL import Image
 
 from rag_fs.config import OCRConfig
 from rag_fs.ingest.parsers import OCR_PARSERS, PARSERS
-from rag_fs.ingest.parsers import pdf as pdf_module
+from rag_fs.ingest.parsers import ocr as ocr_module
 from rag_fs.ingest.parsers.pdf import read_pdf
 from test_ocr import SENTENCE, picture
 from test_parsers import parse_one
@@ -475,7 +475,7 @@ def fake_ocr(monkeypatch):
             return fake["answer"].pop(0)
         return fake["answer"]
 
-    monkeypatch.setattr(pdf_module, "ocr_image", read)
+    monkeypatch.setattr(ocr_module, "ocr_image", read)
     return fake
 
 
@@ -665,3 +665,85 @@ def test_read_pdf_title_comes_back_on_its_earliest_page(tmp_path, fake_ocr):
     typed = [[(0.03, 0.08, f"<p>{title}</p>"), (0.3, 0.4, f"<p>{word}</p>")] for word in ["Δ", "Ε", "Ζ"]]
     text, _ = scan_pdf(tmp_path, scanned + typed)
     assert text == f"{title}\n\n" + "\n\n".join(BODIES[:3] + ["Δ", "Ε", "Ζ"])
+
+
+
+# a scanned page told apart from the others by its grey, so the fake OCR knows which page it reads
+def grey_scan(page):
+    return Image.new("RGB", (600, 800), (20 + 5 * page,) * 3)
+
+
+# the text of a page, with a letter and not a number, so it is not taken for a page number
+def body(page):
+    return f"Το κείμενο της σελίδας {chr(945 + page)} του βιβλίου."
+
+
+# a stand-in for OCR that answers by page: text for the pages in "good", rubbish for the rest
+@pytest.fixture
+def ocr_by_page(monkeypatch):
+    fake = {"good": set(), "calls": [], "title": ""}
+
+    def read(image, ocr):
+        page = (image.getpixel((image.width // 2, image.height // 2))[0] - 20) // 5
+        fake["calls"].append(page)
+        if page in fake["good"]:
+            return fake["title"] + body(page), 95.0
+        return "χ;ζ ψ%ω", 30.0
+
+    monkeypatch.setattr(ocr_module, "ocr_image", read)
+    return fake
+
+
+# a pdf of scanned pages and, at the given places, pages of typed text
+def grey_book(tmp_path, count, typed=()):
+    pages = [[(0.1, 0.3, LONG_TEXT)] if i in typed else [(0.1, 0.9, grey_scan(i))] for i in range(count)]
+    return scan_pdf(tmp_path, pages)
+
+
+# a pdf where no page of the sample gives text: only the 10 pages of the sample, spread over the pdf, are read
+def test_read_pdf_stops_ocr_when_the_sample_has_no_text(tmp_path, ocr_by_page):
+    assert grey_book(tmp_path, 30) == ("", False)
+    calls = ocr_by_page["calls"]
+    assert len(calls) == 10 and len(set(calls)) == 10
+    assert min(calls) <= 2 and max(calls) >= 27
+
+
+# a book whose first 10 pages have no text (cover, blank pages) still gets all its text, every page read once
+def test_read_pdf_book_with_empty_first_pages(tmp_path, ocr_by_page):
+    ocr_by_page["good"] = set(range(10, 30))
+    text, used = grey_book(tmp_path, 30)
+    assert (text, used) == ("\n\n".join(body(i) for i in range(10, 30)), True)
+    assert sorted(ocr_by_page["calls"]) == list(range(30))
+
+
+# with 10 scanned pages or fewer, every one is read once, in order
+@pytest.mark.parametrize("count", [1, 4, 10])
+def test_read_pdf_reads_every_page_of_a_short_scan(tmp_path, ocr_by_page, count):
+    assert grey_book(tmp_path, count) == ("", False)
+    assert ocr_by_page["calls"] == list(range(count))
+
+
+# pages with typed text are not in the sample: only scanned pages are
+def test_read_pdf_sample_is_only_of_scanned_pages(tmp_path, ocr_by_page):
+    typed = range(0, 24, 2)
+    text, used = grey_book(tmp_path, 24, typed)
+    assert used is False
+    calls = ocr_by_page["calls"]
+    assert len(calls) == 10 and len(set(calls)) == 10 and not set(calls) & set(typed)
+
+
+# 11 scanned pages: the sample is 10 of them, and one page with text in the sample makes all 11 read
+def test_read_pdf_one_page_of_the_sample_with_text_reads_all(tmp_path, ocr_by_page):
+    ocr_by_page["good"] = set(range(11))
+    text, used = grey_book(tmp_path, 11)
+    assert used is True and text.count("του βιβλίου.") == 11
+    assert sorted(ocr_by_page["calls"]) == list(range(11))
+
+
+# a title on every page but the cover comes back on the first page that has it, though the sample was read first
+def test_read_pdf_title_after_the_sample_goes_to_its_first_page(tmp_path, ocr_by_page):
+    ocr_by_page["good"] = set(range(1, 30))
+    ocr_by_page["title"] = "Αλγόριθμοι και Δομές Δεδομένων\n\n"
+    text, _ = grey_book(tmp_path, 30)
+    assert text.startswith("Αλγόριθμοι και Δομές Δεδομένων\n\n" + body(1))
+    assert text.count("Αλγόριθμοι") == 1
