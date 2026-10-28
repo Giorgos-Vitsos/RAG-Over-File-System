@@ -747,3 +747,74 @@ def test_read_pdf_title_after_the_sample_goes_to_its_first_page(tmp_path, ocr_by
     text, _ = grey_book(tmp_path, 30)
     assert text.startswith("Αλγόριθμοι και Δομές Δεδομένων\n\n" + body(1))
     assert text.count("Αλγόριθμοι") == 1
+
+
+# greek text as an old pdf font gives it: the windows-1253 bytes read as latin-1 ("και" -> "êáé")
+def old_greek(text):
+    return text.encode("cp1253").decode("latin-1")
+
+
+# (html of one page, text)
+OLD_GREEK_CASES = {
+    "greek words": (f"<p>{old_greek('Υπολογίστε το ολοκλήρωμα της συνάρτησης.')}</p>",
+                    "Υπολογίστε το ολοκλήρωμα της συνάρτησης."),
+    "english words and numbers stay": (f"<p>{old_greek('Η γλώσσα Java είναι στην ενότητα 3.5 (σημείωση).')}</p>",
+                                       "Η γλώσσα Java είναι στην ενότητα 3.5 (σημείωση)."),
+    "capitals with accent": (f"<p>{old_greek('Άσκηση 2: Ένα πρόγραμμα. Ήταν ίδιο όταν Όλγα, Ύλη, Ώρα.')}</p>",
+                             "Άσκηση 2: Ένα πρόγραμμα. Ήταν ίδιο όταν Όλγα, Ύλη, Ώρα."),
+    "paragraphs of the page": (f"<p>{old_greek('Πρώτη παράγραφος.')}</p><p>{old_greek('Δεύτερη παράγραφος.')}</p>",
+                               "Πρώτη παράγραφος.\n\nΔεύτερη παράγραφος."),
+    "a letter that windows-1253 does not have stays": (f"<p>{old_greek('Το γράμμα')} Ò {old_greek('μένει όπως είναι.')}</p>",
+                                                       "Το γράμμα Ò μένει όπως είναι."),
+    "a letter that only iso-8859-7 has": (f"<p>{old_greek('Το σημάδι')} ª {old_greek('είναι υπογεγραμμένη.')}</p>",
+                                          "Το σημάδι ͺ είναι υπογεγραμμένη."),
+    "greek page with many english words": (
+        f"<p>{old_greek('Η εντολή System.out.println του Java τυπώνει text στο console window.')}</p>",
+        "Η εντολή System.out.println του Java τυπώνει text στο console window."),
+}
+
+
+@pytest.mark.parametrize("html, expected", OLD_GREEK_CASES.values(), ids=OLD_GREEK_CASES.keys())
+def test_read_pdf_fixes_old_greek(tmp_path, html, expected):
+    assert read(tmp_path, [html]) == expected
+
+
+# (html of one page) text with letters from the top half of latin-1 that is not old greek
+NOT_OLD_GREEK = {
+    "french and german words in english": "<p>The café in München serves crème brûlée and good coffee every day.</p>",
+    "greek that is already right": "<p>Το κείμενο είναι ήδη σωστό, με τόνους και διαλυτικά: ϊ, ΐ.</p>",
+    "one odd word in a long page": "<p>Ten words of plain english text and then one odd ÉÈÊ.</p>",
+    "a sign alone": "<p>The price is 5 £ or 6 € and the temperature 20 °C.</p>",
+    "words with half their letters accented": "<p>Déjà vu, déjà fait, déjà dit: le café est très bon.</p>",
+    "a fifth of the words is not enough": "<p>Il a été vu hier.</p>",
+    "fractions in a recipe": "<p>Add ¼ cup of milk, ¾ cup of flour, ¼ cup of sugar and ¾ cup of water.</p>",
+}
+
+
+@pytest.mark.parametrize("html", NOT_OLD_GREEK.values(), ids=NOT_OLD_GREEK.keys())
+def test_read_pdf_keeps_latin_letters(tmp_path, html):
+    assert read(tmp_path, [html]) == pdf_text_of(html)
+
+
+# the text of the html when it goes through the pdf with no change
+def pdf_text_of(html):
+    return html.removeprefix("<p>").removesuffix("</p>")
+
+
+# each page is checked on its own: an old greek page is fixed, a french page next to it is not
+def test_read_pdf_fixes_old_greek_page_by_page(tmp_path):
+    pages = [f"<p>{old_greek('Η πρώτη σελίδα είναι ελληνικά.')}</p>", "<p>La deuxième page est très française.</p>"]
+    assert read(tmp_path, pages) == "Η πρώτη σελίδα είναι ελληνικά.\n\nLa deuxième page est très française."
+
+
+# a table on an old greek page is fixed too
+def test_read_pdf_fixes_old_greek_in_tables(tmp_path):
+    table = grid([[old_greek("Όνομα"), old_greek("Βαθμός")], [old_greek("Μαρία"), "9"], [old_greek("Νίκος"), "7"]])
+    text = tables_pdf(tmp_path, [[(150, f"<p>{old_greek('Οι βαθμοί του μαθήματος.')}</p>"), (250, table)]])
+    assert text == "Οι βαθμοί του μαθήματος.\n\n" + GRADES_TEXT
+
+
+# a page that is only a table of old greek is fixed
+def test_read_pdf_fixes_a_page_that_is_only_an_old_greek_table(tmp_path):
+    table = grid([[old_greek("Όνομα"), old_greek("Βαθμός")], [old_greek("Μαρία"), "9"], [old_greek("Νίκος"), "7"]])
+    assert tables_pdf(tmp_path, [[(250, table)]]) == GRADES_TEXT

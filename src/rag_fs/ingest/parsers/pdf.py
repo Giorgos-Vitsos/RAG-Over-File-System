@@ -2,7 +2,7 @@ from pathlib import Path
 import pymupdf
 from collections import Counter
 from .tabular import format_rows
-from .ocr import edge_key,drop_repeated_edges,get_words,fix_text_block,ocr_sample,run_ocr
+from .ocr import edge_key,drop_repeated_edges,get_words,fix_text_block,ocr_sample,run_ocr,WORD
 from PIL import Image
 from rag_fs.config import OCRConfig
 
@@ -10,6 +10,7 @@ EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut
 CHAR_COUNT_OCR_FLAG=50
+SUSPISIOUS_WORD_RATIO=0.2
 
 def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
     ocr_flag=False
@@ -35,6 +36,8 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
             for index,(box,rows) in enumerate(tables):
                 if index not in placed:
                     blocks.append((box[1],box[3],"",rows))
+            if is_suspisious(blocks):
+                fix_suspisious_blocks(blocks)
             pages.append((page.rect.height, blocks))
         pages,titles=drop_headers(pages)#we remove the noise data
         candidates=[]#candidates for ocr
@@ -276,3 +279,56 @@ def add_headings(pages:list[list[tuple[str,list[list[str]]|None]]],bookmarks:lis
             if rest:
                 blocks.insert(index+1,(rest,None))
     return titles
+
+def is_suspisious(blocks)->bool:
+    texts=[]
+    for block in blocks:
+        _,_,text,rows=block
+        texts.append(text)
+        if rows is None:
+            continue
+        for row in rows:
+            for cell in row:
+                texts.append(cell)
+    words=WORD.findall(" ".join(texts))
+    if not words:
+        return False
+    suspisious_words=0
+    for word in words:
+        suspisious_char=0
+        for c in word:
+            if "\u00c0"<=c<="\u00ff":
+                suspisious_char+=1
+        if suspisious_char>len(word)/2:
+            suspisious_words+=1
+    return suspisious_words>len(words)*SUSPISIOUS_WORD_RATIO
+
+def fix_suspisious_text(text:str)->str:
+    chars=[]
+    for c in text:
+        if not "\u00a0"<=c<="\u00ff":#its not broken
+            chars.append(c)
+            continue
+        try:
+            chars.append(bytes([ord(c)]).decode("cp1253"))
+        except UnicodeDecodeError:#cp1253 does not have this
+            try:
+                chars.append(bytes([ord(c)]).decode("iso8859_7"))
+            except UnicodeDecodeError:#iso8859_7 does not have this
+                chars.append(c)
+    return "".join(chars)
+
+def fix_suspisious_blocks(blocks):
+    for i,block in enumerate(blocks):
+        y0,y1,text,rows=block
+        new_text=fix_suspisious_text(text)
+        if rows is None:
+            blocks[i]=y0,y1,new_text,None
+        else:
+            new_rows=[]
+            for row in rows:
+                new_cells=[]
+                for cell in row:
+                    new_cells.append(fix_suspisious_text(cell))
+                new_rows.append(new_cells)
+            blocks[i]=y0,y1,new_text,new_rows
