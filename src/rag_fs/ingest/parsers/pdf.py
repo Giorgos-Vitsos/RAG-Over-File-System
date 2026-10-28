@@ -5,12 +5,14 @@ from .tabular import format_rows
 from .ocr import edge_key,drop_repeated_edges,get_words,fix_text_block,ocr_sample,run_ocr,WORD
 from PIL import Image
 from rag_fs.config import OCRConfig
+import unicodedata
 
 EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut
 CHAR_COUNT_OCR_FLAG=50
 SUSPISIOUS_WORD_RATIO=0.2
+CONTROL_CHAR_RATIO_FILTER=0.2#if we have more than that then the text is probably proken
 
 def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
     ocr_flag=False
@@ -44,14 +46,26 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
         for index,page in enumerate(file.pages()):#we check for ocr inside the pdf page
             blocks=pages[index]
             char_count=0
+            whitespace_count=0
+            control_char_count=0
             for text,rows in blocks:
-                if rows is None:
+                if rows is None:#blocks have either text or rows never both
                     char_count+=len(text.strip())
+                    for c in text.strip():
+                        if c.isspace():
+                            whitespace_count+=1
+                        elif unicodedata.category(c)=="Cc":
+                            control_char_count+=1
                 else:
                     for row in rows:
                         for cell in row:
                             char_count+=len(cell.strip())
-            if char_count>=CHAR_COUNT_OCR_FLAG or not page.get_images():#no ocr needed
+                            for c in cell.strip():
+                                if c.isspace():
+                                    whitespace_count+=1
+                                elif unicodedata.category(c)=="Cc":
+                                    control_char_count+=1
+            if not ((char_count<CHAR_COUNT_OCR_FLAG and page.get_images()) or (control_char_count>(char_count-whitespace_count)*CONTROL_CHAR_RATIO_FILTER)):#no ocr needed
                 continue
             candidates.append(index)
         samples,rest=ocr_sample(candidates)

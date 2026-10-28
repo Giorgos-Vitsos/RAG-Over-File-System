@@ -818,3 +818,76 @@ def test_read_pdf_fixes_old_greek_in_tables(tmp_path):
 def test_read_pdf_fixes_a_page_that_is_only_an_old_greek_table(tmp_path):
     table = grid([[old_greek("Όνομα"), old_greek("Βαθμός")], [old_greek("Μαρία"), "9"], [old_greek("Νίκος"), "7"]])
     assert tables_pdf(tmp_path, [[(250, table)]]) == GRADES_TEXT
+
+
+# a line as a font without a table of characters gives it: control characters among capitals and numbers
+BROKEN_LINE = "\x00\x00K\x00L\x04\x1b 3.\x00\x00 M(\x08)N, \x00\x00 12 \x00P\x00."
+# a line of a LaTeX pdf: a few control characters for the big brackets of a formula
+LATEX_LINE = "f(x) = \x10 x + 1 \x11 for x > 0 and \x10 x - 1 \x11 for x < 0, so f is not continuous at 0."
+
+
+# a pdf whose pages hold html, lines written straight with a font (so control characters stay in the text)
+# and tables whose cells are written straight with a font
+def font_pdf(tmp_path, pages):
+    doc = pymupdf.open()
+    for html, lines, cells in pages:
+        page = doc.new_page()
+        if html:
+            page.insert_htmlbox(pymupdf.Rect(50, 50, 500, 300), html)
+        for n, line in enumerate(lines):
+            page.insert_text((50, 350 + 20 * n), line, fontname="helv")
+        if cells:
+            draw_table(page, 500, grid([[""] * len(cells[0])] * len(cells)))
+            for r, row in enumerate(cells):
+                for c, cell in enumerate(row):
+                    page.insert_text((53 + c * CELL_W, 500 + r * CELL_H + 15), cell, fontname="helv")
+    f = tmp_path / "font.pdf"
+    doc.save(f)
+    return read_pdf(f)
+
+
+# a page of text from a broken font goes to OCR, though it has no image and many characters
+def test_read_pdf_page_with_a_broken_font_goes_to_ocr(tmp_path, fake_ocr):
+    assert font_pdf(tmp_path, [("", [BROKEN_LINE] * 4, None)]) == (FOUND[0], True)
+    assert len(fake_ocr["calls"]) == 1
+
+
+# only the broken page is read, between pages with good text
+def test_read_pdf_only_the_broken_page_goes_to_ocr(tmp_path, fake_ocr):
+    pages = [("<p>Πρώτη σελίδα.</p>", [], None), ("", [BROKEN_LINE] * 4, None), ("<p>Τρίτη σελίδα.</p>", [], None)]
+    assert font_pdf(tmp_path, pages) == ("Πρώτη σελίδα.\n\n" + FOUND[0] + "\n\nΤρίτη σελίδα.", True)
+    assert len(fake_ocr["calls"]) == 1
+
+
+# a broken font in the cells of a table counts too
+def test_read_pdf_table_with_a_broken_font_goes_to_ocr(tmp_path, fake_ocr):
+    cells = [["\x00K\x00\x04", "\x00\x1b1\x00"], ["\x00M\x08\x00", "\x002\x00\x00"], ["\x00N\x00\x04", "\x003\x08\x00"]]
+    text, used = font_pdf(tmp_path, [("", [], cells)])
+    assert used is True and len(fake_ocr["calls"]) == 1
+
+
+# a broken font that puts spaces between its letters: the spaces do not hide how much of the text is broken
+def test_read_pdf_broken_font_with_spaces_goes_to_ocr(tmp_path, fake_ocr):
+    assert font_pdf(tmp_path, [("", ["\x00 a b c " * 10] * 2, None)]) == (FOUND[0], True)
+
+
+# when OCR cannot read the broken page either, its text stays as it was
+def test_read_pdf_broken_page_keeps_its_text_when_ocr_fails(tmp_path, fake_ocr):
+    fake_ocr["answer"] = ("χ;ζ", 20.0)
+    text, used = font_pdf(tmp_path, [("", [BROKEN_LINE] * 4, None)])
+    assert used is False and "M(" in text
+
+
+# (html, lines written with a font) pages that keep their text and do not go to OCR
+NOT_BROKEN = {
+    "latex formulas with a few control characters": ("", [LATEX_LINE] * 3),
+    "a column of numbers, one per line": ("<p>" + "<br>".join(str(n) for n in range(1, 41)) + "</p>", []),
+    "a line of a broken font in a long page": (
+        "<p>" + "Κείμενο της σελίδας με αρκετές σωστές λέξεις για να μετράει. " * 6 + "</p>", [BROKEN_LINE]),
+}
+
+
+@pytest.mark.parametrize("html, lines", NOT_BROKEN.values(), ids=NOT_BROKEN.keys())
+def test_read_pdf_page_that_is_not_broken_stays(tmp_path, fake_ocr, html, lines):
+    text, used = font_pdf(tmp_path, [(html, lines, None)])
+    assert used is False and fake_ocr["calls"] == []
