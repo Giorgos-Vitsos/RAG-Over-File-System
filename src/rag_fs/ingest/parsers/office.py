@@ -17,6 +17,7 @@ from docx.oxml.ns import qn
 from .text import clean_lines,with_address
 from pptx.oxml.ns import qn as pptx_qn
 import re
+from docx.oxml import parse_xml
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
@@ -47,6 +48,9 @@ FALSE_VALUES=("0","false","off")
 FIELD_LINK=re.compile(r"\s*hyperlink\b(.*)",re.I|re.S)#the word HYPERLINK and what follows it
 FIELD_SWITCH=re.compile(r'\\[lot]\s+(?:"[^"]*"|\S+)|\\[mn]\b',re.I)#more arguments of a link field
 FIELD_ADDRESS=re.compile(r'\s*(?:"([^"]*)"|(\S+))')
+CHART="{http://schemas.openxmlformats.org/drawingml/2006/chart}"
+DRAWING="{http://schemas.openxmlformats.org/drawingml/2006/main}"
+RELATION="{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 
 def heading_level(style_name:str)->int:
     if style_name=="Title":
@@ -177,6 +181,10 @@ def docx_shape(shape,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
         alt=(properties.get("descr") or properties.get("title") or "").strip()#we get either the desc or title or empty
         if alt:
             blocks.append(f"[Image: {alt}]")
+    for chart in outside_boxes(shape,CHART+"chart"):
+        part=doc.part.related_parts.get(chart.get(RELATION+"id",""))
+        if part is not None:
+            blocks.append(chart_text(parse_xml(part.blob)))
     for box in outside_boxes(shape,qn("w:txbxContent")):#it holds text and no figures
         blocks.extend(docx_blocks(box,doc,headings))
     return blocks
@@ -320,7 +328,9 @@ def format_shape(shape:BaseShape)->list[str]:
         if text:
             output.append(text)
     elif isinstance(shape,GraphicFrame):
-        if shape.has_table:
+        if shape.has_chart:
+            output.append(chart_text(shape.chart._chartSpace))
+        elif shape.has_table:
             table=shape.table
             merges=[]
             for r in range(len(table.rows)):
@@ -364,3 +374,45 @@ def add_text(text:str,parts:list[str],fields:list[dict])->None:#puts text in the
         parts.append(text)
     elif fields[-1]["result"] is not None:#inside the result of a field
         fields[-1]["result"].append(text)
+
+def chart_text(space)->str:
+    title=space.find(CHART+"chart/"+CHART+"title")
+    title_parts=[]
+    if title is not None:
+        for paragraph in title.iter(DRAWING+"p"):
+            pieces=[]
+            for piece in paragraph.iter(DRAWING+"t"):
+                pieces.append(piece.text or "")
+            title_parts.append("".join(pieces))
+    name=" ".join(" ".join(title_parts).split())
+    if name:#if we have a title for the chart
+        lines=[f"[Chart: {name}]"]
+    else:
+        lines=["[Chart]"]
+    categories={}
+    values={}
+    for series in space.iter(CHART+"ser"):
+        series_name=""
+        tx=series.find(CHART+"tx")
+        if tx is not None:#if there is a name
+            names=[]
+            for v in tx.iter(CHART+"v"):
+                names.append(v.text or "")
+            series_name=" ".join(names)#we put the real name if it exists
+        category=series.find(CHART+"cat")
+        if category is None:#scatter charts have different category
+            category=series.find(CHART+"xVal")
+        value=series.find(CHART+"val")
+        if value is None:#same as before
+            value=series.find(CHART+"yVal")
+        if category is not None:
+            for point in category.iter(CHART+"pt"):
+                categories.setdefault(int(point.get("idx") or 0),point.findtext(CHART+"v") or "")
+        if value is not None:
+            for point in value.iter(CHART+"pt"):
+                number=point.findtext(CHART+"v") or ""
+                values.setdefault(int(point.get("idx") or 0),[]).append(f"{series_name} {number}".strip())
+    for index in sorted(categories):
+        if index in values:
+            lines.append(f"{categories[index]}: "+"; ".join(values[index]))
+    return "\n".join(lines)

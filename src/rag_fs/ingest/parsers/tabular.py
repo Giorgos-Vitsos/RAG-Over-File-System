@@ -1,7 +1,7 @@
 import datetime
 import openpyxl
 from pathlib import Path
-from .text import read_text
+from .text import read_text,with_address
 import csv
 import io
 import xlrd  
@@ -9,7 +9,6 @@ import re
 import zipfile
 from openpyxl.worksheet.cell_range import CellRange
 from ..file_scanner import MB
-from .text import read_text,with_address
 import xml.etree.ElementTree as ET
 
 HEADER_SEARCH_ROWS = 10 #the number of rows in which we search for a header

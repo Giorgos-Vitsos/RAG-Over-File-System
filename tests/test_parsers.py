@@ -11,8 +11,11 @@ import openpyxl
 from openpyxl.worksheet.hyperlink import Hyperlink
 import pandas as pd
 import pptx
+from lxml import etree as lxml_etree
 import pytest
 from docx.opc.constants import RELATIONSHIP_TYPE as DOCX_RT
+from docx.opc.packuri import PackURI
+from docx.opc.part import Part as DocxPart
 from docx.oxml import parse_xml
 from docx.shared import Inches
 from odf.draw import Frame, Page, TextBox as OdfTextBox
@@ -20,10 +23,13 @@ from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, 
 from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableRow
 from odf.text import A as OdfA, LineBreak as OdfLineBreak, P as OdfP, Span as OdfSpan
 from PIL import Image
-from pptx.chart.data import CategoryChartData
+from pptx.chart.chart import Chart as PptxChart
+from pptx.chart.data import CategoryChartData, XyChartData
+from pptx.chart.xmlwriter import ChartXmlWriter
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.shapes.autoshape import Shape as PptxShape
 from pptx.opc.constants import RELATIONSHIP_TYPE as PPTX_RT
+from pptx.oxml import parse_xml as pptx_parse_xml
 from pptx.oxml.ns import qn as pptx_qn
 from pptx.util import Inches as PptxInches
 
@@ -1432,26 +1438,6 @@ def test_read_pptx_hidden_slide(tmp_path):
     assert read_pptx(f) == "# Slide 1\n\nΑ\n\n# Slide 2\n\nΒ"
 
 
-# the title of a chart should be in the text
-@pytest.mark.xfail(strict=True, reason="L33: charts are not read")
-def test_read_pptx_chart_title(tmp_path):
-    p = pptx.Presentation()
-    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
-    data = CategoryChartData()
-    data.categories = ["2023", "2024"]
-    data.add_series("Φοιτητές", (120, 150))
-    # wrong type hints in python-pptx
-    frame = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, PptxInches(1), PptxInches(1),
-                                   PptxInches(6), PptxInches(4), data)  # pyright: ignore[reportArgumentType]
-    chart = frame.chart  # pyright: ignore[reportAttributeAccessIssue]
-    chart.has_title = True
-    chart.chart_title.text_frame.text = "Εγγραφές ανά έτος"
-    f = tmp_path / "chart.pptx"
-    p.save(str(f))
-
-    assert "Εγγραφές ανά έτος" in read_pptx(f)
-
-
 # writes an rtf string to a file
 def write_rtf(tmp_path, content, name="doc.rtf", encoding="ascii"):
     f = tmp_path / name
@@ -1813,6 +1799,161 @@ FIELD_ADDRESS_CASES = {
 @pytest.mark.parametrize("code, expected", FIELD_ADDRESS_CASES.values(), ids=FIELD_ADDRESS_CASES.keys())
 def test_field_address(code, expected):
     assert field_address(code) == expected
+
+# the data of a chart: categories and (name, values) series, or for a scatter chart (name, [(x, y)]) series
+def chart_data(kind, categories, series):
+    if kind == XL_CHART_TYPE.XY_SCATTER:
+        data = XyChartData()
+        for name, points in series:
+            s = data.add_series(name)
+            for x, y in points:
+                s.add_data_point(x, y)
+        return data
+    data = CategoryChartData()
+    data.categories = categories
+    for name, values in series:
+        data.add_series(name, values)
+    return data
+
+
+# a pptx slide with an optional text box and then a chart
+def chart_pptx(f, kind, categories, series, title=None, text=None):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    if text:
+        slide.shapes.add_textbox(PptxInches(1), PptxInches(0), PptxInches(6), PptxInches(1)).text_frame.text = text
+    # wrong type hints in python-pptx
+    frame = slide.shapes.add_chart(kind, PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(4),
+                                   chart_data(kind, categories, series))  # pyright: ignore[reportArgumentType]
+    chart = frame.chart  # pyright: ignore[reportAttributeAccessIssue]
+    if title is not None:
+        chart.has_title = True
+        chart.chart_title.text_frame.text = title
+    p.save(str(f))
+    return read_pptx(f)
+
+
+# a docx with a paragraph and then a chart in its own paragraph; the chart part is made like word makes it
+def chart_docx(f, categories, series, title=None, edit=None):
+    xml = ChartXmlWriter(XL_CHART_TYPE.COLUMN_CLUSTERED, chart_data(XL_CHART_TYPE.COLUMN_CLUSTERED, categories, series)).xml
+    if edit:  # a change to the chart xml that python-pptx cannot make
+        xml = edit(xml)
+    space = pptx_parse_xml(xml.encode("utf-8"))
+    if title is not None:
+        chart = PptxChart(space, None)
+        chart.has_title = True
+        chart.chart_title.text_frame.text = title
+    d = docx.Document()
+    d.add_paragraph("Πριν")
+    part = DocxPart(PackURI("/word/charts/chart1.xml"), "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
+                    lxml_etree.tostring(space, xml_declaration=True, encoding="UTF-8", standalone=True), d.part.package)
+    rid = d.part.relate_to(part, DOCX_RT.CHART)
+    d.add_paragraph()._p.append(parse_xml(
+        f'<w:r xmlns:w="{W_NS}"><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        '<wp:extent cx="5486400" cy="3200400"/><wp:docPr id="1" name="Chart 1"/>'
+        '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+        '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+        f'<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="{R_NS}" r:id="{rid}"/>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'))
+    d.save(str(f))
+    return read_docx(f)
+
+
+YEARS = ["2023", "2024"]
+STUDENTS = ("Φοιτητές", (120, 150))
+GRADUATES = ("Απόφοιτοι", (30, 40))
+TITLE = "Εγγραφές ανά έτος"
+
+# (chart type, categories, series, title, text of the slide)
+PPTX_CHART_CASES = {
+    "title and one series": (XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS], TITLE,
+                             "[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "two series": (XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS, GRADUATES], TITLE,
+                   "[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120; Απόφοιτοι 30\n2024: Φοιτητές 150; Απόφοιτοι 40"),
+    "no title": (XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS], None,
+                 "[Chart]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "title of two lines is one line": (XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS], "Εγγραφές\nανά έτος",
+                                       "[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "pie chart": (XL_CHART_TYPE.PIE, ["Χειμερινό", "Εαρινό"], [("Μαθήματα", (6, 5))], "Μαθήματα ανά εξάμηνο",
+                  "[Chart: Μαθήματα ανά εξάμηνο]\nΧειμερινό: Μαθήματα 6\nΕαρινό: Μαθήματα 5"),
+    "line chart with decimals": (XL_CHART_TYPE.LINE, ["Πρόοδος", "Τελικό"], [("Μέσος όρος", (6.5, 7.25))], None,
+                                 "[Chart]\nΠρόοδος: Μέσος όρος 6.5\nΤελικό: Μέσος όρος 7.25"),
+    "numbers as categories": (XL_CHART_TYPE.COLUMN_CLUSTERED, [2023, 2024], [STUDENTS], None,
+                              "[Chart]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "missing value of one series": (XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [("Φοιτητές", (120, None)), GRADUATES], None,
+                                    "[Chart]\n2023: Φοιτητές 120; Απόφοιτοι 30\n2024: Απόφοιτοι 40"),
+    "category without any value is left out": (XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [("Φοιτητές", (None, 150))], None,
+                                               "[Chart]\n2024: Φοιτητές 150"),
+    "scatter chart": (XL_CHART_TYPE.XY_SCATTER, None, [("Μετρήσεις", [(1, 2.5), (2, 3.1)])], None,
+                      "[Chart]\n1: Μετρήσεις 2.5\n2: Μετρήσεις 3.1"),
+}
+
+
+@pytest.mark.parametrize("kind, categories, series, title, expected", PPTX_CHART_CASES.values(), ids=PPTX_CHART_CASES.keys())
+def test_read_pptx_charts(tmp_path, kind, categories, series, title, expected):
+    assert chart_pptx(tmp_path / "chart.pptx", kind, categories, series, title) == "# Slide 1\n\n" + expected
+
+
+# a chart after a text box on the slide comes after its text
+def test_read_pptx_chart_after_text(tmp_path):
+    text = chart_pptx(tmp_path / "chart.pptx", XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS], TITLE, "Οι εγγραφές μεγαλώνουν.")
+    assert text == "# Slide 1\n\nΟι εγγραφές μεγαλώνουν.\n\n[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"
+
+
+# a chart in a word document, with and without a title
+@pytest.mark.parametrize("title, expected", [
+    (TITLE, "Πριν\n\n[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120; Απόφοιτοι 30\n2024: Φοιτητές 150; Απόφοιτοι 40"),
+    (None, "Πριν\n\n[Chart]\n2023: Φοιτητές 120; Απόφοιτοι 30\n2024: Φοιτητές 150; Απόφοιτοι 40"),
+], ids=["with a title", "without a title"])
+def test_read_docx_charts(tmp_path, title, expected):
+    assert chart_docx(tmp_path / "chart.docx", YEARS, [STUDENTS, GRADUATES], title) == expected
+
+# a chart without a title but with a title on its value axis: the axis title is not the chart title
+def test_read_pptx_chart_axis_title_is_not_the_title(tmp_path):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    frame = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(4),
+                                   chart_data(XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS]))  # pyright: ignore[reportArgumentType]
+    chart = frame.chart  # pyright: ignore[reportAttributeAccessIssue]
+    chart.has_title = False
+    chart.value_axis.has_title = True
+    chart.value_axis.axis_title.text_frame.text = "Αριθμός"
+    f = tmp_path / "chart.pptx"
+    p.save(str(f))
+    assert read_pptx(f) == "# Slide 1\n\n[Chart]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"
+
+
+# a title written in two pieces of one line, and a title with extra spaces
+@pytest.mark.parametrize("pieces, expected", [
+    (["Εγγρα", "φές ανά έτος"], "Εγγραφές ανά έτος"),
+    (["  Εγγραφές   ανά έτος  "], "Εγγραφές ανά έτος"),
+], ids=["two pieces", "extra spaces"])
+def test_read_pptx_chart_title_pieces(tmp_path, pieces, expected):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    frame = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, PptxInches(1), PptxInches(1), PptxInches(6), PptxInches(4),
+                                   chart_data(XL_CHART_TYPE.COLUMN_CLUSTERED, YEARS, [STUDENTS]))  # pyright: ignore[reportArgumentType]
+    chart = frame.chart  # pyright: ignore[reportAttributeAccessIssue]
+    chart.has_title = True
+    paragraph = chart.chart_title.text_frame.paragraphs[0]
+    for piece in pieces:
+        paragraph.add_run().text = piece
+    f = tmp_path / "chart.pptx"
+    p.save(str(f))
+    assert read_pptx(f) == f"# Slide 1\n\n[Chart: {expected}]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"
+
+
+# twelve months keep their order (10, 11 and 12 come after 9)
+def test_read_pptx_chart_of_twelve_months(tmp_path):
+    months = ["Ιαν", "Φεβ", "Μαρ", "Απρ", "Μάι", "Ιουν", "Ιουλ", "Αυγ", "Σεπ", "Οκτ", "Νοε", "Δεκ"]
+    text = chart_pptx(tmp_path / "chart.pptx", XL_CHART_TYPE.LINE, months, [("Ώρες", tuple(range(1, 13)))])
+    assert text == "# Slide 1\n\n[Chart]\n" + "\n".join(f"{m}: Ώρες {i}" for i, m in enumerate(months, 1))
+
+
+# a series without a name gives only its values
+def test_read_docx_chart_series_without_a_name(tmp_path):
+    text = chart_docx(tmp_path / "chart.docx", YEARS, [STUDENTS], edit=lambda xml: re.sub(r"<c:tx>.*?</c:tx>", "", xml, flags=re.S))
+    assert text == "Πριν\n\n[Chart]\n2023: 120\n2024: 150"
 
 # (file name, text in the file, text after parse_file)
 NORMALIZE_CASES = {
