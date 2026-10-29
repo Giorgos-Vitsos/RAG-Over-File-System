@@ -4,7 +4,7 @@ from pathlib import Path
 from odf import teletype
 from odf.opendocument import load, OpenDocument
 from odf.style import Style
-from .tabular import fill_merged, format_rows, format_sheets
+from .tabular import fill_merged, format_rows, format_sheets, cell_to_str
 from .text import clean_lines,with_address
 
 ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
@@ -17,7 +17,7 @@ ODF_SKIP={
     "text:table-of-content","text:illustration-index","text:table-index","text:object-index",
     "text:alphabetical-index","text:user-index",
     "text:sequence-decls","text:variable-decls","text:user-field-decls","text:dde-connection-decls","office:forms",
-    "draw:object","draw:object-ole"
+    "draw:object-ole"
 }
 
 def is_skipped(tag:str)->bool:
@@ -102,6 +102,11 @@ def gather_data(node,headings:dict[str,int] | None)->list[str]:
         alt=odf_image_alt(node)
         if alt:
             blocks.append(f"[Image: {alt}]")
+    if tag=="draw:object":
+        text=odf_chart(node)
+        if text:
+            return [text]
+        return []
     blocks.extend(read_blocks(node,headings))#group blocks
     return blocks
 
@@ -244,3 +249,49 @@ def odp_shape(shape)->list[str]:
     if not text:
         return []
     return [text]
+
+def odf_chart(obj)->str:
+    name=(obj.getAttribute("href") or "").removeprefix("./")
+    owner=obj.ownerDocument#the document the tag belongs to
+    if owner is None:
+        return ""
+    for sub in owner.childobjects:
+        if sub.folder.strip("/")!=name:#not the correct file
+            continue
+        for body in sub.body.childNodes:
+            if body.tagName!="office:chart":#not a chart
+                continue
+            for chart in body.childNodes:
+                if chart.tagName=="chart:chart":
+                    return odf_chart_text(chart)
+    return ""
+
+def odf_chart_text(chart)->str:
+    title_parts=[]
+    rows=[]
+    for child in chart.childNodes:
+        if child.tagName=="chart:title":
+            for paragraph in child.childNodes:
+                title_parts.append(teletype.extractText(paragraph))#we build the title if it exists
+        elif child.tagName=="table:table":#the data of the chart
+            rows,_,_=odf_table_rows(child)
+    name=" ".join(" ".join(title_parts).split())
+    if name:
+        lines=[f"[Chart: {name}]"]
+    else:
+        lines=["[Chart]"]
+    if rows:
+        names=rows[0]#the first row has the names of the series
+        for row in rows[1:]:#the rest are category or value
+            values=[]
+            for column in range(1,len(row)):
+                if row[column] is None:
+                    continue
+                if column<len(names) and names[column] is not None:
+                    series_name=cell_to_str(names[column])
+                else:
+                    series_name=""
+                values.append(f"{series_name} {cell_to_str(row[column])}".strip())
+            if values:#a category without a value is left out
+                lines.append(f"{cell_to_str(row[0])}: "+"; ".join(values))
+    return "\n".join(lines)

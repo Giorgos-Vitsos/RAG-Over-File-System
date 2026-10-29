@@ -18,9 +18,10 @@ from docx.opc.packuri import PackURI
 from docx.opc.part import Part as DocxPart
 from docx.oxml import parse_xml
 from docx.shared import Inches
-from odf.draw import Frame, Page, TextBox as OdfTextBox
-from odf.opendocument import OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
-from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableRow
+from odf.chart import Chart as OdfChart, PlotArea, Series as OdfSeries, Title as OdfChartTitle
+from odf.draw import Frame, Object as OdfObject, Page, TextBox as OdfTextBox
+from odf.opendocument import OpenDocumentChart, OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
+from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableHeaderRows, TableRow, TableRows
 from odf.text import A as OdfA, LineBreak as OdfLineBreak, P as OdfP, Span as OdfSpan
 from PIL import Image
 from pptx.chart.chart import Chart as PptxChart
@@ -1954,6 +1955,121 @@ def test_read_pptx_chart_of_twelve_months(tmp_path):
 def test_read_docx_chart_series_without_a_name(tmp_path):
     text = chart_docx(tmp_path / "chart.docx", YEARS, [STUDENTS], edit=lambda xml: re.sub(r"<c:tx>.*?</c:tx>", "", xml, flags=re.S))
     assert text == "Πριν\n\n[Chart]\n2023: 120\n2024: 150"
+
+# a chart of libreoffice: a small document with a title and a local table, its first row the names of the series
+def odf_chart(title, categories, series):
+    doc = OpenDocumentChart()
+    chart = OdfChart(attributes={"class": "chart:bar"})
+    if title is not None:
+        box = OdfChartTitle()
+        for line in title.split("\n"):
+            box.addElement(OdfP(text=line))
+        chart.addElement(box)
+    plot = PlotArea()
+    for n in range(len(series)):
+        column = chr(ord("B") + n)
+        plot.addElement(OdfSeries(valuescellrangeaddress=f"local-table.{column}2:local-table.{column}{len(categories) + 1}",
+                                  labelcelladdress=f"local-table.{column}1"))
+    chart.addElement(plot)
+    table = OdfTable(name="local-table")
+    header = TableHeaderRows()
+    row = TableRow()
+    for name in [""] + [name for name, _ in series]:
+        cell = TableCell(valuetype="string")
+        cell.addElement(OdfP(text=name))
+        row.addElement(cell)
+    header.addElement(row)
+    table.addElement(header)
+    body = TableRows()
+    for i, category in enumerate(categories):
+        row = TableRow()
+        if isinstance(category, str):
+            cell = TableCell(valuetype="string")
+        else:  # a number as a category, like a year
+            cell = TableCell(valuetype="float", value=category)
+        cell.addElement(OdfP(text=str(category)))
+        row.addElement(cell)
+        for _, values in series:
+            value = values[i]
+            if value is None:
+                row.addElement(TableCell())
+            else:
+                cell = TableCell(valuetype="float", value=value)
+                cell.addElement(OdfP(text=str(value)))
+                row.addElement(cell)
+        body.addElement(row)
+    table.addElement(body)
+    chart.addElement(table)
+    doc.chart.addElement(chart)
+    return doc
+
+
+# the frame that shows an object of the document
+def object_frame(name):
+    frame = Frame(width="10cm", height="6cm", anchortype="paragraph")
+    frame.addElement(OdfObject(href=name))
+    return frame
+
+
+# an odt with a paragraph and then a chart in its own paragraph
+def chart_odt(f, categories, series, title=None):
+    doc = OpenDocumentText()
+    doc.text.addElement(OdfP(text="Πριν"))
+    name = doc.addObject(odf_chart(title, categories, series))
+    paragraph = OdfP()
+    paragraph.addElement(object_frame(name))
+    doc.text.addElement(paragraph)
+    doc.save(str(f))
+    return read_odf(f)
+
+
+# (categories, series, title, text after "Πριν")
+ODT_CHART_CASES = {
+    "title and two series": (YEARS, [STUDENTS, GRADUATES], TITLE,
+                             "[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120; Απόφοιτοι 30\n2024: Φοιτητές 150; Απόφοιτοι 40"),
+    "no title": (YEARS, [STUDENTS], None, "[Chart]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "title of two lines is one line": (YEARS, [STUDENTS], "Εγγραφές\nανά έτος",
+                                       "[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "decimals": (["Πρόοδος", "Τελικό"], [("Μέσος όρος", (6.5, 7.25))], None,
+                 "[Chart]\nΠρόοδος: Μέσος όρος 6.5\nΤελικό: Μέσος όρος 7.25"),
+    "missing value of one series": (YEARS, [("Φοιτητές", (120, None)), GRADUATES], None,
+                                    "[Chart]\n2023: Φοιτητές 120; Απόφοιτοι 30\n2024: Απόφοιτοι 40"),
+    "missing value in the first series": (YEARS, [("Φοιτητές", (None, 150)), GRADUATES], None,
+                                          "[Chart]\n2023: Απόφοιτοι 30\n2024: Φοιτητές 150; Απόφοιτοι 40"),
+    "category without any value is left out": (YEARS, [("Φοιτητές", (None, 150))], None, "[Chart]\n2024: Φοιτητές 150"),
+    "numbers as categories": ([2023, 2024], [STUDENTS], None, "[Chart]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"),
+    "series without a name": (YEARS, [("", (120, 150))], None, "[Chart]\n2023: 120\n2024: 150"),
+}
+
+
+@pytest.mark.parametrize("categories, series, title, expected", ODT_CHART_CASES.values(), ids=ODT_CHART_CASES.keys())
+def test_read_odt_charts(tmp_path, categories, series, title, expected):
+    assert chart_odt(tmp_path / "chart.odt", categories, series, title) == "Πριν\n\n" + expected
+
+
+# a chart on a slide of an odp
+def test_read_odp_chart(tmp_path):
+    doc = OpenDocumentPresentation()
+    page = Page(masterpagename="Default")
+    page.addElement(object_frame(doc.addObject(odf_chart(TITLE, YEARS, [STUDENTS]))))
+    doc.presentation.addElement(page)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    f = tmp_path / "chart.odp"
+    doc.save(str(f))
+    assert read_odf(f) == "# Slide 1\n\n[Chart: Εγγραφές ανά έτος]\n2023: Φοιτητές 120\n2024: Φοιτητές 150"
+
+
+# an object that is not in the file, or is not a chart, gives nothing and the file still reads
+@pytest.mark.parametrize("missing", [True, False], ids=["object not in the file", "object is not a chart"])
+def test_read_odt_object_that_is_not_a_chart(tmp_path, missing):
+    doc = OpenDocumentText()
+    doc.text.addElement(OdfP(text="Πριν"))
+    name = "./Object 9" if missing else doc.addObject(OpenDocumentText())
+    paragraph = OdfP()
+    paragraph.addElement(object_frame(name))
+    doc.text.addElement(paragraph)
+    f = tmp_path / "object.odt"
+    doc.save(str(f))
+    assert read_odf(f) == "Πριν"
 
 # (file name, text in the file, text after parse_file)
 NORMALIZE_CASES = {
