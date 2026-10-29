@@ -16,6 +16,7 @@ from .text import read_text
 from docx.oxml.ns import qn
 from .text import clean_lines,with_address
 from pptx.oxml.ns import qn as pptx_qn
+import re
 
 DOCX_MAIN = "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"#type of normal docx file
 WORD_VARIANTS=[#types of doc variants
@@ -42,6 +43,10 @@ DOCX_SKIP={#tags without text of the document
 }
 
 FALSE_VALUES=("0","false","off")
+
+FIELD_LINK=re.compile(r"\s*hyperlink\b(.*)",re.I|re.S)#the word HYPERLINK and what follows it
+FIELD_SWITCH=re.compile(r'\\[lot]\s+(?:"[^"]*"|\S+)|\\[mn]\b',re.I)#more arguments of a link field
+FIELD_ADDRESS=re.compile(r'\s*(?:"([^"]*)"|(\S+))')
 
 def heading_level(style_name:str)->int:
     if style_name=="Title":
@@ -111,26 +116,53 @@ def docx_paragraph(p,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
 
 def docx_inline(node,shapes:list,doc:DocxDocument)->str:
     parts=[]
+    fields=[]
     for child in node:
         tag=child.tag
+        if tag==qn("w:r"):#link seperated in different runs
+            mark=child.find(qn("w:fldChar"))#all seperation marks
+            if mark is not None:
+                kind=mark.get(qn("w:fldCharType"))
+                if kind=="begin":
+                    fields.append({"code":"","result":None})
+                elif kind=="separate" and fields:
+                    fields[-1]["result"]=[]
+                elif kind=="end" and fields:
+                    field=fields.pop()
+                    add_text(with_address("".join(field["result"] or []),field_address(field["code"])),parts,fields)
+                continue
+            codes=child.findall(qn("w:instrText"))
+            if codes:
+                if fields:
+                    for code in codes:
+                        fields[-1]["code"]+=code.text or ""
+                continue
         if tag in DOCX_SKIP:
             continue
         if tag==qn("w:t"):
-            parts.append(child.text or "")
+            add_text(child.text or "",parts,fields)
         elif tag==qn("w:tab"):
-            parts.append("\t")
+            add_text("\t",parts,fields)
         elif tag in (qn("w:br"),qn("w:cr")):
-            parts.append("\n")
+            add_text("\n",parts,fields)
         elif tag==qn("w:noBreakHyphen"):
-            parts.append("-")
+            add_text("-",parts,fields)
         elif tag in (qn("w:drawing"),qn("w:pict")):
             shapes.append(child)
+        elif tag==qn("w:fldSimple"):#different way of reading links
+            text=docx_inline(child,shapes,doc)
+            code=child.get(qn("w:instr")) or ""
+            address=field_address(code)
+            add_text(with_address(text,address),parts,fields)
         elif tag==qn("w:hyperlink"):
-            parts.append(with_address(docx_inline(child,shapes,doc),docx_link(child,doc)))
+            add_text(with_address(docx_inline(child,shapes,doc),docx_link(child,doc)),parts,fields)
         elif tag==MC+"AlternateContent":
-            parts.append(docx_inline(child[0],shapes,doc))#we read only node[0] because next node repeats the data
+            add_text(docx_inline(child[0],shapes,doc),parts,fields)#we read only node[0] because next node repeats the data
         else:
-            parts.append(docx_inline(child,shapes,doc))
+            add_text(docx_inline(child,shapes,doc),parts,fields)
+    while fields:
+        field=fields.pop()
+        add_text("".join(field["result"] or []),parts,fields)
     return "".join(parts)
 
 def docx_link(link,doc:DocxDocument)->str:
@@ -316,3 +348,19 @@ def read_rtf(path: Path)->str:
         raise ValueError("Not an .rtf file")
     final=rtf_to_text(text).strip()
     return final
+
+def field_address(code:str)->str:
+    link=FIELD_LINK.match(code)
+    if link is None:
+        return ""
+    rest=FIELD_SWITCH.sub(" ",link.group(1))
+    address=FIELD_ADDRESS.match(rest)
+    if address is None:#no address found
+        return ""
+    return address.group(1) or address.group(2) or ""
+
+def add_text(text:str,parts:list[str],fields:list[dict])->None:#puts text in the correct pos
+    if not fields:#outside of every field
+        parts.append(text)
+    elif fields[-1]["result"] is not None:#inside the result of a field
+        fields[-1]["result"].append(text)

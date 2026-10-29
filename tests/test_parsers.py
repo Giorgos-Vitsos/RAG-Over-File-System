@@ -31,7 +31,7 @@ from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import PARSERS, parse_file, tabular
 from rag_fs.ingest.parsers.office import (
-    format_shape, heading_level, read_docx, read_pptx, read_rtf, read_slide_variants,
+    field_address, format_shape, heading_level, read_docx, read_pptx, read_rtf, read_slide_variants,
     read_word_variants,
 )
 from rag_fs.ingest.parsers.opendocument import read_odf, read_ods
@@ -1715,6 +1715,104 @@ def test_read_pptx_field_in_a_paragraph(tmp_path):
 
     assert read_pptx(f) == "# Slide 1\n\nΔιαφάνεια 1"
 
+
+# the runs of a field: begin, its code (in pieces), separate, its result (in pieces), end
+def field(code, result, end=True):
+    codes = code if isinstance(code, list) else [code]
+    results = result if isinstance(result, list) else [result]
+    runs = ['<w:r><w:fldChar w:fldCharType="begin"/></w:r>']
+    runs += [f'<w:r><w:instrText xml:space="preserve">{c}</w:instrText></w:r>' for c in codes]
+    runs += ['<w:r><w:fldChar w:fldCharType="separate"/></w:r>']
+    runs += [f'<w:r><w:t xml:space="preserve">{r}</w:t></w:r>' for r in results]
+    if end:
+        runs += ['<w:r><w:fldChar w:fldCharType="end"/></w:r>']
+    return runs
+
+
+# a field of one tag: its code is in w:instr, its result inside
+def simple_field(code, result):
+    instr = code.replace('"', "&quot;")  # quotes inside an attribute
+    return [f'<w:fldSimple w:instr="{instr}"><w:r><w:t>{result}</w:t></w:r></w:fldSimple>']
+
+
+# (xml parts of the paragraph between "Δες τον " and " για λεπτομέρειες.", text)
+FIELD_LINK_CASES = {
+    "link field": (field(' HYPERLINK "https://x.gr/guide" ', "οδηγό"),
+                   "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "code of the field in two pieces": (field([' HYPERLINK "https://x.gr/', 'guide" '], "οδηγό"),
+                                        "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "result of the field in two pieces": (field(' HYPERLINK "https://x.gr/guide" ', ["οδη", "γό"]),
+                                          "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "tooltip after the address": (field(' HYPERLINK "https://x.gr/guide" \\o "Ο οδηγός του μαθήματος" ', "οδηγό"),
+                                  "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "address without quotes": (field(" HYPERLINK https://x.gr/guide ", "οδηγό"),
+                               "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "field code in small letters": (field(' hyperlink "https://x.gr/guide" ', "οδηγό"),
+                                    "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+    "email field": (field(' HYPERLINK "mailto:maria@uoc.gr" ', "Μαρία"),
+                    "Δες τον Μαρία (mailto:maria@uoc.gr) για λεπτομέρειες."),
+    "simple link field": (simple_field(' HYPERLINK "https://x.gr/guide" ', "οδηγό"),
+                          "Δες τον οδηγό (https://x.gr/guide) για λεπτομέρειες."),
+}
+
+
+@pytest.mark.parametrize("xml_parts, expected", FIELD_LINK_CASES.values(), ids=FIELD_LINK_CASES.keys())
+def test_read_docx_link_fields(tmp_path, xml_parts, expected):
+    assert read_docx(docx_with_xml(tmp_path, "Δες τον ", xml_parts, " για λεπτομέρειες.")) == expected
+
+
+# (xml parts, text) fields that add no address
+FIELD_KEPT = {
+    "link to a bookmark in the file": (field(' HYPERLINK \\l "_Toc1" ', "οδηγό"), "Δες τον οδηγό για λεπτομέρειες."),
+    "result is the address": (field(' HYPERLINK "https://x.gr/guide" ', "https://x.gr/guide"),
+                              "Δες τον https://x.gr/guide για λεπτομέρειες."),
+    "other field": (field(" REF _Ref1 \\h ", "οδηγό"), "Δες τον οδηγό για λεπτομέρειες."),
+    "simple field that is not a link": (simple_field(" PAGE ", "3"), "Δες τον 3 για λεπτομέρειες."),
+    "field with no end keeps its result": (field(' HYPERLINK "https://x.gr/guide" ', "οδηγό", end=False),
+                                           "Δες τον οδηγό για λεπτομέρειες."),
+}
+
+
+@pytest.mark.parametrize("xml_parts, expected", FIELD_KEPT.values(), ids=FIELD_KEPT.keys())
+def test_read_docx_fields_without_an_address(tmp_path, xml_parts, expected):
+    assert read_docx(docx_with_xml(tmp_path, "Δες τον ", xml_parts, " για λεπτομέρειες.")) == expected
+
+
+# two link fields in one paragraph keep each its own address
+def test_read_docx_two_link_fields(tmp_path):
+    parts = field(' HYPERLINK "https://a.gr" ', "α") + ['<w:r><w:t xml:space="preserve"> και </w:t></w:r>']
+    parts += field(' HYPERLINK "https://b.gr" ', "β")
+    assert read_docx(docx_with_xml(tmp_path, "Δες ", parts, ".")) == "Δες α (https://a.gr) και β (https://b.gr)."
+
+
+# a field inside the result of a link field: the inner result is part of the link text
+def test_read_docx_field_inside_a_link_field(tmp_path):
+    inner = field(" PAGE ", "3")
+    parts = field(' HYPERLINK "https://x.gr/guide" ', "σελίδα ")[:-1] + inner + ['<w:r><w:fldChar w:fldCharType="end"/></w:r>']
+    assert read_docx(docx_with_xml(tmp_path, "Δες τη ", parts, ".")) == "Δες τη σελίδα 3 (https://x.gr/guide)."
+
+# (code of a field, address)
+FIELD_ADDRESS_CASES = {
+    "address in quotes": (' HYPERLINK "https://x.gr/guide" ', "https://x.gr/guide"),
+    "address without quotes": (" HYPERLINK https://x.gr/guide ", "https://x.gr/guide"),
+    "small letters": (' hyperlink "https://x.gr/guide" ', "https://x.gr/guide"),
+    "tooltip before the address": (' HYPERLINK \\o "Ο οδηγός" "https://x.gr/guide" ', "https://x.gr/guide"),
+    "window without quotes before the address": (" HYPERLINK \\t _blank https://x.gr/guide ", "https://x.gr/guide"),
+    "switch without an argument before the address": (' HYPERLINK \\n "https://x.gr/guide" ', "https://x.gr/guide"),
+    "place after the address": (' HYPERLINK "https://x.gr/guide" \\l "part2" ', "https://x.gr/guide"),
+    "only a place in the file": (' HYPERLINK \\l "_Toc1" ', ""),
+    "switch in capitals": (' HYPERLINK \\O "Ο οδηγός" "https://x.gr/guide" ', "https://x.gr/guide"),
+    "nothing after the word": (" HYPERLINK ", ""),
+    "empty quotes": (' HYPERLINK "" ', ""),
+    "another field": (" PAGE ", ""),
+    "a longer word": (' HYPERLINKS "https://x.gr/guide" ', ""),
+    "no code": ("", ""),
+}
+
+
+@pytest.mark.parametrize("code, expected", FIELD_ADDRESS_CASES.values(), ids=FIELD_ADDRESS_CASES.keys())
+def test_field_address(code, expected):
+    assert field_address(code) == expected
 
 # (file name, text in the file, text after parse_file)
 NORMALIZE_CASES = {
