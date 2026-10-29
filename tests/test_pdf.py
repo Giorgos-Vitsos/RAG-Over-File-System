@@ -951,3 +951,38 @@ def test_read_pdf_word_broken_around_a_table_is_left(tmp_path):
     table = grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"]])
     text = tables_pdf(tmp_path, [[(150, "<p>Η πληρο-</p>"), (250, table), (400, "<p>φορία μετά.</p>")]])
     assert text == "Η πληρο-\n\nΌνομα: Μαρία; Βαθμός: 9\n\nφορία μετά."
+
+
+# (html of one page, text)
+CAPITALS_HYPHEN_CASES = {
+    "latin acronym": ("<p>Τα PDF-<br>αρχεία ανοίγουν.</p>", "Τα PDF-αρχεία ανοίγουν."),
+    "greek acronym": ("<p>Τα ΑΕΙ-<br>ιδρύματα της χώρας.</p>", "Τα ΑΕΙ-ιδρύματα της χώρας."),
+    "acronym with a number": ("<p>Ένα MP3-<br>αρχείο ήχου.</p>", "Ένα MP3-αρχείο ήχου."),
+    "one capital letter": ("<p>Οι Χ-<br>ακτίνες περνούν.</p>", "Οι Χ-ακτίνες περνούν."),
+    "a word all in capitals is joined": ("<p>Η ΠΛΗΡΟ-<br>ΦΟΡΙΑ ΤΟΥ ΤΙΤΛΟΥ</p>", "Η ΠΛΗΡΟΦΟΡΙΑ ΤΟΥ ΤΙΤΛΟΥ"),
+}
+
+
+@pytest.mark.parametrize("html, expected", CAPITALS_HYPHEN_CASES.values(), ids=CAPITALS_HYPHEN_CASES.keys())
+def test_read_pdf_keeps_the_hyphen_after_capitals(tmp_path, html, expected):
+    assert read(tmp_path, [html]) == expected
+
+
+# a word that only starts with a capital is joined as before
+@pytest.mark.parametrize("html, expected", [
+    ("<p>Η Πληρο-<br>φορία αρχίζει.</p>", "Η Πληροφορία αρχίζει."),
+    ("<p>Το Java-<br>script τρέχει.</p>", "Το Javascript τρέχει."),
+])
+def test_read_pdf_joins_a_word_that_starts_with_a_capital(tmp_path, html, expected):
+    assert read(tmp_path, [html]) == expected
+
+
+# two words in capitals with a hyphen, written so elsewhere in the document, keep it
+def test_read_pdf_keeps_a_hyphen_between_capitals_used_elsewhere(tmp_path):
+    html = "<p>Τα ΑΕΙ-ΤΕΙ και τα ΑΕΙ-<br>ΤΕΙ της χώρας.</p>"
+    assert read(tmp_path, [html]) == "Τα ΑΕΙ-ΤΕΙ και τα ΑΕΙ-ΤΕΙ της χώρας."
+
+
+# an acronym at the end of a page keeps its hyphen with the next page
+def test_read_pdf_keeps_the_hyphen_after_capitals_across_pages(tmp_path):
+    assert read(tmp_path, ["<p>Τα PDF-</p>", "<p>αρχεία ανοίγουν.</p>"]) == "Τα PDF-αρχεία ανοίγουν."

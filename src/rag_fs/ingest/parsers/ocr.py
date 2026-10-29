@@ -221,9 +221,10 @@ def fix_text_block(block:str,words:set[str])->str:
 def join_broken(word1:str,word2:str,words:set[str])->str:
     joined=word1+word2
     hyphenated=word1+"-"+word2
-    if not word2[0].islower():#if the second part starts with capital then definitly not a broken word
-        return hyphenated
-    if hyphenated.lower() in words and joined.lower() not in words:
+    if not word1.isupper() or not word2.isupper():
+        if word1.isupper() or not word2[0].islower():
+            return hyphenated
+    if joined.lower() not in words and hyphenated.lower() in words:
         return hyphenated
     return joined
 
