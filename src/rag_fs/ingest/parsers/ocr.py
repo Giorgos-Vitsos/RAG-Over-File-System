@@ -224,7 +224,7 @@ def join_broken(word1:str,word2:str,words:set[str])->str:
     if not word1.isupper() or not word2.isupper():
         if word1.isupper() or not word2[0].islower():
             return hyphenated
-    if joined.lower() not in words and hyphenated.lower() in words:
+    if joined.lower() not in words and hyphenated.lower() in words:#we check how its written elsewhere
         return hyphenated
     return joined
 

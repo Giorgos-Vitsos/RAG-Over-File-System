@@ -9,8 +9,14 @@ import re
 import zipfile
 from openpyxl.worksheet.cell_range import CellRange
 from ..file_scanner import MB
+from .text import read_text,with_address
+import xml.etree.ElementTree as ET
 
 HEADER_SEARCH_ROWS = 10 #the number of rows in which we search for a header
+MERGE_CELL=re.compile(rb'<(?:\w+:)?mergeCell ref="([^"]+)"')#meged cells are tagged with this regex
+HYPERLINK=re.compile(rb'<(?:\w+:)?hyperlink\b[^>]*>')#link tag of a cell
+LINK_REF=re.compile(rb'\bref="([^"]+)"')#the cell of a link
+LINK_ID=re.compile(rb'\br:id="([^"]+)"')#the name of the address in the .rels file
 
 def cell_to_str(value)->str:
     if value is None:
@@ -161,8 +167,6 @@ def format_rows(rows, header_rows: int = 0)->str:
         lines.append(" | ".join(unused))
     return "\n".join(lines)
 
-MERGE_CELL=re.compile(rb'<(?:\w+:)?mergeCell ref="([^"]+)"')#meged cells are tagged with this regex
-
 def xlsx_merges(path: Path, sheet) -> list[tuple[int,int,int,int]]:
     found=set()#we keep each tag only once
     with zipfile.ZipFile(path) as z, z.open(sheet._worksheet_path) as f:#the xml of the sheet inside the zip
@@ -185,11 +189,16 @@ def read_xlsx(path: Path)->str:
     book=openpyxl.load_workbook(path,read_only=True,data_only=True)#for macros we only want the output,data_only=True does that
     sheets=[]
     for sheet in book.worksheets:
-        rows=fill_merged(list(sheet.iter_rows(values_only=True)),xlsx_merges(path,sheet))#we remove data like colour,font,etc. from each and we merge if needed
+        rows=[]
+        for row in sheet.iter_rows(values_only=True):
+            rows.append(list(row))
+        for (r,c),address in xlsx_links(path,sheet).items():
+            if r<len(rows) and c<len(rows[r]) and rows[r][c] is not None:#if we have text other than the link
+                rows[r][c]=with_address(cell_to_str(rows[r][c]),address)
+        rows=fill_merged(rows,xlsx_merges(path,sheet)) 
         sheets.append((sheet.title,rows,0))
     book.close()
     return format_sheets(sheets)
-
 
 def format_sheets(sheets):#for multiple pages
     blocks=[]
@@ -231,3 +240,33 @@ def read_xls(path: Path)->str:
         sheets.append((sheet.name,fill_merged(rows,merges),0))
     book.release_resources()
     return format_sheets(sheets)
+
+def xlsx_links(path: Path, sheet) -> dict[tuple[int,int],str]:
+    found=set()
+    with zipfile.ZipFile(path) as z:
+        with z.open(sheet._worksheet_path) as f:
+            tail=b""#helps us recover broken data if it was cut
+            while True:
+                chunk=f.read(MB)#we read in chunks to not overload memory
+                if not chunk:
+                    break
+                data=tail+chunk#we stich 
+                for tag in HYPERLINK.findall(data):
+                    ref=LINK_REF.search(tag)
+                    rid=LINK_ID.search(tag)
+                    if ref and rid:#a valid link outside the file
+                        found.add((ref.group(1).decode(),rid.group(1).decode()))
+                tail=data[-300:]#we keep some data to stich to the next
+        folder,name=sheet._worksheet_path.rsplit("/",1)
+        rels_path=f"{folder}/_rels/{name}.rels"#here lives the relations of the file
+        addresses={}
+        if rels_path in z.namelist():#if relations exists
+            for rel in ET.fromstring(z.read(rels_path)):
+                if rel.get("TargetMode")=="External":
+                    addresses[rel.get("Id")]=rel.get("Target")
+    links={}
+    for ref,rid in found:
+        if rid in addresses:
+            cell=CellRange(ref)
+            links[(cell.min_row-1,cell.min_col-1)]=addresses[rid]
+    return links

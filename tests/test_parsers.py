@@ -8,6 +8,7 @@ from pathlib import Path
 
 import docx
 import openpyxl
+from openpyxl.worksheet.hyperlink import Hyperlink
 import pandas as pd
 import pptx
 import pytest
@@ -748,6 +749,126 @@ def test_read_xlsx_merges_from_the_xml(tmp_path, monkeypatch, chunk, prefix):
     monkeypatch.setattr(tabular, "MB", chunk)
 
     assert read_xlsx(f) == "# Sheet: Sheet\n" + MERGE_SHAPES["across"][2]
+
+
+# an xlsx with one sheet per (name, rows, links); links maps a cell like "B2" to its address
+def linked_xlsx(path, sheets):
+    book = openpyxl.Workbook()
+    book.remove(book.worksheets[0])
+    for name, rows, links in sheets:
+        sheet = book.create_sheet(name)
+        for row in rows:
+            sheet.append(row)
+        for cell, address in links.items():
+            if address.startswith("#"):
+                sheet[cell].hyperlink = Hyperlink(ref=cell, location=address[1:])
+            else:
+                sheet[cell].hyperlink = address
+    book.save(path)
+    return read_xlsx(path)
+
+
+COURSES = [["Μάθημα", "Σελίδα"], ["ΗΥ-252", "Ιστοσελίδα"]]
+
+# (sheets, text)
+XLSX_LINK_CASES = {
+    "cell with a link": (
+        [("Μαθήματα", COURSES, {"B2": "https://www.csd.uoc.gr/~hy252"})],
+        "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-252; Σελίδα: Ιστοσελίδα (https://www.csd.uoc.gr/~hy252)"),
+    "email link": (
+        [("Επαφές", [["Όνομα", "Email"], ["Γραμματεία", "Γράψτε μας"]], {"B2": "mailto:secretary@csd.uoc.gr"})],
+        "# Sheet: Επαφές\nΌνομα: Γραμματεία; Email: Γράψτε μας (mailto:secretary@csd.uoc.gr)"),
+    "number with a link": (
+        [("Βαθμοί", [["Μάθημα", "Βαθμός"], ["ΗΥ-252", 9]], {"B2": "https://elearn.uoc.gr/grades"})],
+        "# Sheet: Βαθμοί\nΜάθημα: ΗΥ-252; Βαθμός: 9 (https://elearn.uoc.gr/grades)"),
+    "each sheet has its own links": (
+        [("Α", [["Μάθημα", "Σελίδα"], ["ΗΥ-100", "Πρώτη"]], {"B2": "https://a.gr"}),
+         ("Β", [["Μάθημα", "Σελίδα"], ["ΗΥ-200", "Δεύτερη"]], {"B2": "https://b.gr"})],
+        "# Sheet: Α\nΜάθημα: ΗΥ-100; Σελίδα: Πρώτη (https://a.gr)\n\n# Sheet: Β\nΜάθημα: ΗΥ-200; Σελίδα: Δεύτερη (https://b.gr)"),
+    "two links in one sheet": (
+        [("Μαθήματα", [["Μάθημα", "Σελίδα"], ["ΗΥ-100", "Πρώτη"], ["ΗΥ-200", "Δεύτερη"]],
+          {"B2": "https://a.gr", "B3": "https://b.gr"})],
+        "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-100; Σελίδα: Πρώτη (https://a.gr)\nΜάθημα: ΗΥ-200; Σελίδα: Δεύτερη (https://b.gr)"),
+}
+
+
+@pytest.mark.parametrize("sheets, expected", XLSX_LINK_CASES.values(), ids=XLSX_LINK_CASES.keys())
+def test_read_xlsx_links(tmp_path, sheets, expected):
+    assert linked_xlsx(tmp_path / "links.xlsx", sheets) == expected
+
+
+# (sheets, text) links that add nothing
+XLSX_LINK_KEPT = {
+    "link that is the text of the cell is not written twice": (
+        [("Μαθήματα", [["Μάθημα", "Σελίδα"], ["ΗΥ-252", "https://www.csd.uoc.gr/~hy252"]], {"B2": "https://www.csd.uoc.gr/~hy252"})],
+        "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-252; Σελίδα: https://www.csd.uoc.gr/~hy252"),
+    "link to a place in the workbook is left out": (
+        [("Μαθήματα", COURSES, {"B2": "#Βαθμοί!A1"})],
+        "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-252; Σελίδα: Ιστοσελίδα"),
+}
+
+
+@pytest.mark.parametrize("sheets, expected", XLSX_LINK_KEPT.values(), ids=XLSX_LINK_KEPT.keys())
+def test_read_xlsx_links_that_add_nothing(tmp_path, sheets, expected):
+    assert linked_xlsx(tmp_path / "links.xlsx", sheets) == expected
+
+
+# a date with a link is written like any date
+def test_read_xlsx_date_with_a_link(tmp_path):
+    rows = [["Ημερομηνία", "Θέμα"], [datetime.datetime(2024, 3, 1), "Εξέταση"]]
+    text = linked_xlsx(tmp_path / "dates.xlsx", [("Πρόγραμμα", rows, {"A2": "https://www.csd.uoc.gr/exams"})])
+    assert text == "# Sheet: Πρόγραμμα\nΗμερομηνία: 2024-03-01 (https://www.csd.uoc.gr/exams); Θέμα: Εξέταση"
+
+
+# a merged cell with a link has the link in every cell it covers
+def test_read_xlsx_merged_cell_with_a_link(tmp_path):
+    book = openpyxl.Workbook()
+    sheet = book.active
+    assert sheet is not None
+    sheet.title = "Βαθμοί"
+    for row in [["Όνομα", "Πρόοδος", "Τελικό"], ["Μαρία", "Προφίλ", None]]:
+        sheet.append(row)
+    sheet["B2"].hyperlink = "https://elearn.uoc.gr/maria"
+    sheet.merge_cells("B2:C2")
+    f = tmp_path / "merged.xlsx"
+    book.save(f)
+    assert read_xlsx(f) == ("# Sheet: Βαθμοί\nΌνομα: Μαρία; Πρόοδος: Προφίλ (https://elearn.uoc.gr/maria); "
+                            "Τελικό: Προφίλ (https://elearn.uoc.gr/maria)")
+
+
+# a link on a cell outside the data of the sheet is left out, the file still reads
+def test_read_xlsx_link_outside_the_data(tmp_path):
+    linked_xlsx(tmp_path / "plain.xlsx", [("Μαθήματα", COURSES, {"B2": "https://www.csd.uoc.gr/~hy252"})])
+    f = tmp_path / "outside.xlsx"
+    with zipfile.ZipFile(tmp_path / "plain.xlsx") as zin, zipfile.ZipFile(f, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data = data.replace(b'ref="B2"', b'ref="H40"')
+            zout.writestr(item, data)
+    assert read_xlsx(f) == "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-252; Σελίδα: Ιστοσελίδα"
+
+
+# a sheet without links reads as before
+def test_read_xlsx_without_links(tmp_path):
+    assert linked_xlsx(tmp_path / "plain.xlsx", [("Μαθήματα", COURSES, {})]) == "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-252; Σελίδα: Ιστοσελίδα"
+
+
+# links from the sheet xml: tags cut between two chunks, and tags with a prefix
+@pytest.mark.parametrize("chunk, prefix", [(7, ""), (1024 * 1024, "x:")], ids=["tiny chunks", "x: prefix"])
+def test_read_xlsx_links_from_the_xml(tmp_path, monkeypatch, chunk, prefix):
+    linked_xlsx(tmp_path / "plain.xlsx", [("Μαθήματα", COURSES, {"B2": "https://www.csd.uoc.gr/~hy252"})])
+    f = tmp_path / "linked.xlsx"
+    with zipfile.ZipFile(tmp_path / "plain.xlsx") as zin, zipfile.ZipFile(f, "w") as zout:
+        for item in zin.infolist():
+            data = zin.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                ns = b'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+                data = data.replace(ns, ns + b" " + ns.replace(b"xmlns", b"xmlns:x"), 1)
+                data = data.replace(b"<hyperlink ", f"<{prefix}hyperlink ".encode())
+            zout.writestr(item, data)
+    monkeypatch.setattr(tabular, "MB", chunk)
+    assert read_xlsx(f) == "# Sheet: Μαθήματα\nΜάθημα: ΗΥ-252; Σελίδα: Ιστοσελίδα (https://www.csd.uoc.gr/~hy252)"
 
 
 # the value of a merge goes into every cell it covers
