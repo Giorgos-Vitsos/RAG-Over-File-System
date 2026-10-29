@@ -8,6 +8,8 @@ import unicodedata
 
 LIGATURE=re.compile("[\ufb00-\ufb06]")#one character for two or three letters
 BROKEN_WORD=re.compile(r"(\w+)-\n(\w+)")#a word cut by a hyphen at the end of a line
+END_BROKEN=re.compile(r"(\w+)-$")#a word and a hyphen at the very end
+START_WORD=re.compile(r"(\w+)")
 HYPHENATED_WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
 NUMBER=re.compile(r"\d+")
 LOOKALIKE = str.maketrans("ABEZHIKMNOPTYXoviukxap", "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧονιυκχαρ")
@@ -122,8 +124,15 @@ def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
         pages=pages_new
         clean_ocr_result=[]
         for paragraphs in pages:
-            if paragraphs:
-                clean_ocr_result.append("\n\n".join(paragraphs))
+            for paragraph in paragraphs:
+                if not paragraph:
+                    continue
+                if clean_ocr_result:#we have something before
+                    joined=join_broken_pages(clean_ocr_result[-1],paragraph,words)#we check if we have broken pages
+                    if joined is not None:
+                        clean_ocr_result[-1]=joined#we combine them
+                        continue
+                clean_ocr_result.append(paragraph)
         ocr_results=clean_ocr_result
         if ocr_results:
             return "\n\n".join(ocr_results),True
@@ -236,3 +245,12 @@ def run_ocr(image,ocr:OCRConfig)->str|None:
     if confidence<ocr.min_confidence or len(text_ocr.strip())<ocr.min_chars:#ocr is not confident source
         return None
     return text_ocr
+
+def join_broken_pages(page1:str,page2:str,words:set[str])->str|None:
+    end=END_BROKEN.search(page1)
+    start=START_WORD.match(page2)
+    if end is None or start is None:
+        return None
+    if not start.group(1)[0].islower():
+        return None
+    return page1[:end.start()]+join_broken(end.group(1),start.group(1),words)+page2[start.end():]

@@ -891,3 +891,63 @@ NOT_BROKEN = {
 def test_read_pdf_page_that_is_not_broken_stays(tmp_path, fake_ocr, html, lines):
     text, used = font_pdf(tmp_path, [(html, lines, None)])
     assert used is False and fake_ocr["calls"] == []
+
+
+# (pages, page size, text)
+BROKEN_ACROSS_CASES = {
+    "word broken between two pages": (
+        ["<p>Η πρώτη πρόταση. Η πληρο-</p>", "<p>φορία συνεχίζει. Και άλλη.</p>"], PORTRAIT,
+        "Η πρώτη πρόταση. Η πληροφορία συνεχίζει. Και άλλη."),
+    "word broken between two blocks of a page": (
+        ["<p>Η πληρο-</p><p>φορία της σελίδας.</p>"], PORTRAIT, "Η πληροφορία της σελίδας."),
+    "hyphen word used elsewhere keeps its hyphen": (
+        ["<p>Ένα well-known θέμα, ένα well-</p>", "<p>known άλλο.</p>"], PORTRAIT,
+        "Ένα well-known θέμα, ένα well-known άλλο."),
+    "next page after the next one": (
+        ["<p>Η πληρο-</p>", "<p>φορία δύο.</p>", "<p>Τρίτη σελίδα.</p>"], PORTRAIT,
+        "Η πληροφορία δύο.\n\nΤρίτη σελίδα."),
+}
+
+
+@pytest.mark.parametrize("pages, size, expected", BROKEN_ACROSS_CASES.values(), ids=BROKEN_ACROSS_CASES.keys())
+def test_read_pdf_joins_a_word_broken_across_blocks(tmp_path, pages, size, expected):
+    assert read(tmp_path, pages, size) == expected
+
+
+# (pages, page size, text) blocks that stay apart
+NOT_BROKEN_ACROSS = {
+    "capital on the next page": (["<p>Το τέλος με παύλα-</p>", "<p>Κεφάλαιο 3</p>"], PORTRAIT,
+                                 "Το τέλος με παύλα-\n\nΚεφάλαιο 3"),
+    "number on the next page": (["<p>Το μάθημα ΗΥ-</p>", "<p>340 είναι εδώ.</p>"], PORTRAIT,
+                                "Το μάθημα ΗΥ-\n\n340 είναι εδώ."),
+    "a dash with a space before it": (["<p>Η τιμή είναι -</p>", "<p>πέντε βαθμοί.</p>"], PORTRAIT,
+                                      "Η τιμή είναι -\n\nπέντε βαθμοί."),
+    "slides are not joined": (["<p>Η πληρο-</p>", "<p>φορία</p>"], LANDSCAPE,
+                              "# Slide 1\n\nΗ πληρο-\n\n# Slide 2\n\nφορία"),
+}
+
+
+@pytest.mark.parametrize("pages, size, expected", NOT_BROKEN_ACROSS.values(), ids=NOT_BROKEN_ACROSS.keys())
+def test_read_pdf_keeps_blocks_apart(tmp_path, pages, size, expected):
+    assert read(tmp_path, pages, size) == expected
+
+
+# a table after a broken word is not joined to it, even when its first cell starts with a small letter
+def test_read_pdf_does_not_join_a_word_to_a_table(tmp_path):
+    table = grid([["όνομα", "βαθμός"], ["Μαρία", "9"]])
+    text = tables_pdf(tmp_path, [[(150, "<p>Οι βαθμοί του μαθή-</p>")], [(250, table)]])
+    assert text == "Οι βαθμοί του μαθή-\n\nόνομα: Μαρία; βαθμός: 9"
+
+
+# a table that ends in a hyphen is not joined to the text after it
+def test_read_pdf_does_not_join_a_table_to_the_next_text(tmp_path):
+    table = grid([["Μάθημα", "Σχόλιο"], ["ΗΥ-340", "καλό-"]])
+    text = tables_pdf(tmp_path, [[(150, table), (300, "<p>τατο μάθημα.</p>")]])
+    assert text == "Μάθημα: ΗΥ-340; Σχόλιο: καλό-\n\nτατο μάθημα."
+
+
+# a word broken before a table is joined to the text after the table, not to the table
+def test_read_pdf_word_broken_around_a_table_is_left(tmp_path):
+    table = grid([["Όνομα", "Βαθμός"], ["Μαρία", "9"]])
+    text = tables_pdf(tmp_path, [[(150, "<p>Η πληρο-</p>"), (250, table), (400, "<p>φορία μετά.</p>")]])
+    assert text == "Η πληρο-\n\nΌνομα: Μαρία; Βαθμός: 9\n\nφορία μετά."

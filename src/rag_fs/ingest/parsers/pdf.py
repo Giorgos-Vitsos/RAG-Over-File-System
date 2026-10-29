@@ -2,7 +2,7 @@ from pathlib import Path
 import pymupdf
 from collections import Counter
 from .tabular import format_rows
-from .ocr import edge_key,drop_repeated_edges,get_words,fix_text_block,ocr_sample,run_ocr,WORD
+from .ocr import edge_key,drop_repeated_edges,get_words,fix_text_block,ocr_sample,run_ocr,WORD,join_broken_pages
 from PIL import Image
 from rag_fs.config import OCRConfig
 import unicodedata
@@ -115,15 +115,22 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
     titles=add_headings(pages,bookmarks,slides)
     words=get_words(pages)
     output=[]
+    last_was_text=False
     for i,blocks in enumerate(pages):
         if slides:
             header=f"# Slide {i+1}"
             if i in titles:
                 header+=": "+titles[i]
             output.append(header)
+            last_was_text=False
         for text,rows in blocks:
             if rows is None:
                 text=fix_text_block(text,words)
+                if last_was_text:#we search for broken pages
+                    joined=join_broken_pages(output[-1],text,words)
+                    if joined is not None:#we connect them
+                        output[-1]=joined
+                        continue
             else:
                 clean=[]
                 for row in rows:
@@ -134,6 +141,10 @@ def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
                 text=format_rows(clean)
             if text:
                 output.append(text)
+                if rows is None:#we appended text
+                    last_was_text=True
+                else:#we appanded table
+                    last_was_text=False
     return "\n\n".join(output),ocr_flag
 
 def is_slides(file)->bool:

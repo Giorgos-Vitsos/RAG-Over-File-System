@@ -8,7 +8,7 @@ from rag_fs.config import CorpusConfig, OCRConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import ocr as ocr_module
 from rag_fs.ingest.parsers import parse_file
-from rag_fs.ingest.parsers.ocr import check_ocr, ocr_image, ocr_sample, read_image
+from rag_fs.ingest.parsers.ocr import check_ocr, join_broken_pages, ocr_image, ocr_sample, read_image
 
 
 # a white picture with the html written on it, like a scanned page
@@ -535,3 +535,47 @@ def test_read_image_tiff_title_after_the_sample_goes_to_its_first_page(tmp_path,
     text, _ = grey_tiff(tmp_path, 30)
     assert text.startswith("Αλγόριθμοι και Δομές Δεδομένων\n\n" + frame_text(1))
     assert text.count("Αλγόριθμοι") == 1
+
+
+# (text of each page of a scanned tiff, text that comes out)
+TIFF_BROKEN_ACROSS = {
+    "word broken between two pages": (
+        ["Η πρώτη πρόταση. Η πληρο-", "φορία συνεχίζει. Και άλλη."], "Η πρώτη πρόταση. Η πληροφορία συνεχίζει. Και άλλη."),
+    "word broken between two paragraphs of a page": (["Η πληρο-\n\nφορία της σελίδας."], "Η πληροφορία της σελίδας."),
+}
+
+
+@pytest.mark.parametrize("texts, expected", TIFF_BROKEN_ACROSS.values(), ids=TIFF_BROKEN_ACROSS.keys())
+def test_parse_file_tiff_joins_a_word_broken_across_pages(tmp_path, monkeypatch, texts, expected):
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == expected
+
+
+# an empty paragraph from the OCR leaves no gap
+def test_parse_file_tiff_empty_paragraph_leaves_no_gap(tmp_path, monkeypatch):
+    texts = ["Η πρώτη παράγραφος εδώ.\n\n\n\nΗ δεύτερη παράγραφος εδώ."]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == "Η πρώτη παράγραφος εδώ.\n\nΗ δεύτερη παράγραφος εδώ."
+
+
+# a capital at the start of the next page is not joined
+def test_parse_file_tiff_keeps_pages_apart_before_a_capital(tmp_path, monkeypatch):
+    texts = ["Το τέλος της σελίδας με παύλα-", "Κεφάλαιο τρία της ενότητας"]
+    assert scanned_tiff(tmp_path, monkeypatch, texts) == "Το τέλος της σελίδας με παύλα-\n\nΚεφάλαιο τρία της ενότητας"
+
+
+# (text before, text after, words of the document, joined text or None)
+JOIN_PAGES_CASES = {
+    "broken word": ("Η πληρο-", "φορία συνεχίζει.", set(), "Η πληροφορία συνεχίζει."),
+    "hyphen word used elsewhere": ("Ένα well-", "known θέμα.", {"well-known"}, "Ένα well-known θέμα."),
+    "capital after": ("Το τέλος-", "Κεφάλαιο τρία.", set(), None),
+    "number after": ("Το μάθημα ΗΥ-", "340 εδώ.", set(), None),
+    "space before the hyphen": ("Η τιμή είναι -", "πέντε.", set(), None),
+    "hyphen not at the end": ("Ένα well-known θέμα.", "και άλλο.", set(), None),
+    "a sign before the next word": ("Η πληρο-", "(φορία) εδώ.", set(), None),
+    "empty text before": ("", "φορία.", set(), None),
+    "empty text after": ("Η πληρο-", "", set(), None),
+}
+
+
+@pytest.mark.parametrize("before, after, words, expected", JOIN_PAGES_CASES.values(), ids=JOIN_PAGES_CASES.keys())
+def test_join_broken_pages(before, after, words, expected):
+    assert join_broken_pages(before, after, words) == expected
