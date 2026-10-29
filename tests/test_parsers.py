@@ -1627,6 +1627,65 @@ def test_parse_file_leaves_code_as_written(tmp_path):
 
 
 
+
+# utf-8 text that a program read as latin-1 and saved again ("Α" -> "Î\x91")
+def as_latin1(text):
+    return text.encode("utf-8").decode("latin-1")
+
+
+# utf-8 text that a program read as windows-1252 ("υ" -> "Ï…"); bytes that 1252 does not have stay as latin-1
+def as_cp1252(text):
+    return "".join(bytes([b]).decode("cp1252", errors="ignore") or chr(b) for b in text.encode("utf-8"))
+
+
+# (file name, text written in it, text that comes out)
+MOJIBAKE_CASES = {
+    "greek read as latin-1": ("notes.txt", as_latin1("Αποτέλεσμα εικόνας για ρομπότ"), "Αποτέλεσμα εικόνας για ρομπότ"),
+    "greek read as windows-1252": ("notes.txt", as_cp1252("Το αρχείο του μαθήματος"), "Το αρχείο του μαθήματος"),
+    "french read as latin-1": ("notes.txt", as_latin1("Le café est très bon"), "Le café est très bon"),
+    "euro sign and quotes of three bytes": ("notes.txt", as_cp1252("Κόστος 5€ “τελικό”"), "Κόστος 5€ “τελικό”"),
+    "only the broken part changes": (
+        "notes.txt", "Το σωστό κείμενο και " + as_latin1("το χαλασμένο") + " μαζί.", "Το σωστό κείμενο και το χαλασμένο μαζί."),
+    "fixed text is normalized after": ("notes.txt", as_latin1("Το σήµα"), "Το σήμα"),
+    "table cells": ("grades.csv", "Όνομα;Σχόλιο\nΜαρία;" + as_latin1("Πολύ καλή") + "\n", "Όνομα: Μαρία; Σχόλιο: Πολύ καλή"),
+    "markdown heading": ("notes.md", "# " + as_latin1("Άσκηση") + "\n\nΚείμενο", "# Άσκηση\n\nΚείμενο"),
+}
+
+
+@pytest.mark.parametrize("name, written, expected", MOJIBAKE_CASES.values(), ids=MOJIBAKE_CASES.keys())
+def test_parse_file_fixes_mojibake(tmp_path, name, written, expected):
+    assert parse_one(tmp_path, name, written.encode()).raw_text == expected
+
+
+# a word document with mojibake in a paragraph is fixed too
+def test_parse_file_fixes_mojibake_in_docx(tmp_path):
+    def make(f):
+        d = docx.Document()
+        d.add_paragraph(as_latin1("Αποτέλεσμα εικόνας"))
+        d.save(f)
+    assert parse_one(tmp_path, "notes.docx", built(tmp_path, "made.docx", make)).raw_text == "Αποτέλεσμα εικόνας"
+
+
+# text with letters that only look like mojibake stays as it is
+MOJIBAKE_KEPT = {
+    "capitals with accents before ascii": "Île-de-France, São Paulo, Ãgua",
+    "signs alone": "Τιμή: 5 € ή 6 £, θερμοκρασία 20 °C, © 2024",
+    "letters in a row that are not utf-8": "ÀÁÂ ÃÄÅ",
+    "a lead letter at the end": "Το τέλος είναι Î",
+}
+
+
+@pytest.mark.parametrize("text", MOJIBAKE_KEPT.values(), ids=MOJIBAKE_KEPT.keys())
+def test_parse_file_keeps_text_that_is_not_mojibake(tmp_path, text):
+    assert parse_one(tmp_path, "notes.txt", text.encode()).raw_text == text
+
+
+# code is kept as written, even when it looks like mojibake
+def test_parse_file_leaves_mojibake_in_code(tmp_path):
+    code = 'BROKEN = "' + as_latin1("Α") + '"\n'
+    assert parse_one(tmp_path, "broken.py", code.encode()).raw_text == code
+
+
 # programs in the alpha language of the compiler course are code, so nothing in them is changed
 @pytest.mark.parametrize("name", ["test1.asc", "queue.alpha", "MAIN.ASC"])
 def test_alpha_files_are_code(tmp_path, name):

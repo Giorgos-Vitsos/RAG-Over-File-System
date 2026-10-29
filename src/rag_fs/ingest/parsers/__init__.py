@@ -20,6 +20,8 @@ TABULAR_EXT={".csv",".tsv",".xlsx",".xls",".ods"}
 BINARY_EXT={".zip", ".gz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".bin", ".iso", ".mp3", ".wav", ".flac", ".mp4", ".mkv", 
             ".avi", ".mov", ".ttf",".woff", ".pyc", ".class", ".jar", ".o", ".db", ".sqlite"}
 ACCENT_START=re.compile(r"[\u0384\u00b4][ΑΕΗΙΟΥΩ]")#greek characters with accents that break
+CP1252_SIGNS="".join(bytes([b]).decode("cp1252") for b in range(0x80,0xa0) if b not in (0x81,0x8d,0x8f,0x90,0x9d))
+MOJIBAKE=re.compile("[\u0080-\u00ff"+re.escape(CP1252_SIGNS)+"]+")#possible broken characters
 
 PARSERS={
     ".txt": read_text,
@@ -114,6 +116,22 @@ def content_type_of(ext):
         return "prose"
 
 def normalize(text:str)->str:
+    text=fix_mojibake(text)
     text=ACCENT_START.sub(lambda match: unicodedata.normalize("NFC",match.group(0)[-1]+"\u0301"),text)
     text=unicodedata.normalize("NFKC",text)
     return text
+
+def fix_mojibake(text:str)->str:
+    return MOJIBAKE.sub(lambda match: fix_mojibake_run(match.group(0)),text)
+
+def fix_mojibake_run(text:str)->str:
+    data=[]
+    for c in text:
+        if ord(c)<=0xff:
+            data.append(ord(c))
+        else:
+            data.append(c.encode("cp1252")[0])
+    try:
+        return bytes(data).decode("utf-8")
+    except UnicodeDecodeError:#not a mojibake
+        return text
