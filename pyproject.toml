@@ -27,7 +27,8 @@ dependencies = [
     "chromadb",
     "rank_bm25",
     "charset-normalizer",
-    "xlrd"
+    "xlrd",
+    "libarchive-c"
 ]
 
 [project.optional-dependencies]     # optional groups: pip install -e ".[research]"
