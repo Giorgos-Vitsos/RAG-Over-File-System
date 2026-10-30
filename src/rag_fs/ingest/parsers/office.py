@@ -51,6 +51,7 @@ FIELD_ADDRESS=re.compile(r'\s*(?:"([^"]*)"|(\S+))')
 CHART="{http://schemas.openxmlformats.org/drawingml/2006/chart}"
 DRAWING="{http://schemas.openxmlformats.org/drawingml/2006/main}"
 RELATION="{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+DGM="{http://schemas.openxmlformats.org/drawingml/2006/diagram}"#tags of a smartart
 
 def heading_level(style_name:str)->int:
     if style_name=="Title":
@@ -187,6 +188,12 @@ def docx_shape(shape,doc:DocxDocument,headings:dict[str,int] | None)->list[str]:
             blocks.append(chart_text(parse_xml(part.blob)))
     for box in outside_boxes(shape,qn("w:txbxContent")):#it holds text and no figures
         blocks.extend(docx_blocks(box,doc,headings))
+    for ids in outside_boxes(shape,DGM+"relIds"):
+        part=doc.part.related_parts.get(ids.get(RELATION+"dm",""))
+        if part is not None:
+            text=diagram_text(parse_xml(part.blob))
+            if text:
+                blocks.append(text)
     return blocks
 
 def outside_boxes(node,tag:str)->list:
@@ -346,7 +353,14 @@ def format_shape(shape:BaseShape)->list[str]:
                 rows.append(cells)
             text=format_rows(fill_merged(rows,merges)).strip()
             if text:
-                output.append(text)     
+                output.append(text)
+        else:
+            ids=next(shape._element.iter(DGM+"relIds"),None)#we search in all depths for this
+            if ids is not None:#we found smartart
+                data=shape.part.related_part(ids.get(RELATION+"dm",""))
+                text=diagram_text(parse_xml(data.blob))
+                if text:
+                    output.append(text)  
     for alt in shape._element.xpath("./*/p:cNvPr/@descr"):
         if alt.strip():
             output.append(f"[Image: {alt}]")
@@ -416,3 +430,42 @@ def chart_text(space)->str:
         if index in values:
             lines.append(f"{categories[index]}: "+"; ".join(values[index]))
     return "\n".join(lines)
+
+def diagram_text(model)->str:
+    kinds={}
+    texts={}
+    for point in model.iter(DGM+"pt"):
+        point_id=point.get("modelId") or ""
+        kinds[point_id]=point.get("type") or "node"#a point without a type is a normal item
+        body=point.find(DGM+"t")
+        if body is not None:
+            paragraphs=[]
+            for paragraph in body.iter(DRAWING+"p"):
+                pieces=[]
+                for piece in paragraph.iter(DRAWING+"t"):
+                    pieces.append(piece.text or "")
+                paragraphs.append("".join(pieces))
+            texts[point_id]=" ".join(" ".join(paragraphs).split())
+    children={}
+    for link in model.iter(DGM+"cxn"):
+        if (link.get("type") or "parOf")!="parOf":#the other ones are for drawings
+            continue
+        children.setdefault(link.get("srcId") or "",[]).append((int(link.get("srcOrd") or 0),link.get("destId") or ""))
+    lines=[]
+    for point_id,kind in kinds.items():
+        if kind=="doc":#the root
+            diagram_lines(point_id,0,kinds,texts,children,lines)
+    if not lines:
+        return ""
+    return "\n".join(["[Diagram]"]+lines)
+
+def diagram_lines(parent:str,depth:int,kinds:dict,texts:dict,children:dict,lines:list[str])->None:#crates a markdown like hirarchy
+    for _,child in sorted(children.get(parent,[])):
+        if kinds.get(child) not in ("node","asst"):#points only for drawing
+            continue
+        text=texts.get(child,"")
+        if text:
+            lines.append("  "*depth+"- "+text)
+            diagram_lines(child,depth+1,kinds,texts,children,lines)
+        else:#if empty the children go there
+            diagram_lines(child,depth,kinds,texts,children,lines)

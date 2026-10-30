@@ -31,6 +31,8 @@ from pptx.enum.chart import XL_CHART_TYPE
 from pptx.shapes.autoshape import Shape as PptxShape
 from pptx.opc.constants import RELATIONSHIP_TYPE as PPTX_RT
 from pptx.oxml import parse_xml as pptx_parse_xml
+from pptx.opc.package import Part as PptxPart
+from pptx.opc.packuri import PackURI as PptxPackURI
 from pptx.oxml.ns import qn as pptx_qn
 from pptx.util import Inches as PptxInches
 
@@ -2070,6 +2072,117 @@ def test_read_odt_object_that_is_not_a_chart(tmp_path, missing):
     f = tmp_path / "object.odt"
     doc.save(str(f))
     assert read_odf(f) == "Πριν"
+
+DGM_NS = "http://schemas.openxmlformats.org/drawingml/2006/diagram"
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+
+# a paragraph of a smartart item: a text, or a tuple of pieces written apart (like a word with a bold part)
+def smartart_paragraph(paragraph):
+    if not paragraph:
+        return "<a:p/>"
+    pieces = paragraph if isinstance(paragraph, tuple) else (paragraph,)
+    return "<a:p>" + "".join(f"<a:r><a:t>{piece}</a:t></a:r>" for piece in pieces) + "</a:p>"
+
+
+# the data part of a smartart, like office writes it: points (in a mixed order) and "parent of" connections with their order;
+# a tree is a list of (text or list of paragraphs, children, kind)
+def smartart_data(tree):
+    points = ['<dgm:pt modelId="0" type="doc"><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:p/></dgm:t></dgm:pt>']
+    links = []
+    count = [0]
+
+    def add(parent, nodes):
+        for order, (text, children, kind) in enumerate(nodes):
+            count[0] += 1
+            me = str(count[0])
+            paragraphs = text if isinstance(text, list) else [text]
+            body = "".join(smartart_paragraph(p) for p in paragraphs)
+            kind_attr = f' type="{kind}"' if kind else ""
+            points.append(f'<dgm:pt modelId="{me}"{kind_attr}><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/>{body}</dgm:t></dgm:pt>')
+            points.append(f'<dgm:pt modelId="p{me}" type="pres"><dgm:prSet/><dgm:spPr/></dgm:pt>')
+            points.append(f'<dgm:pt modelId="t{me}" type="parTrans"><dgm:prSet/><dgm:spPr/><dgm:t><a:bodyPr/><a:p/></dgm:t></dgm:pt>')
+            links.append(f'<dgm:cxn modelId="c{me}" srcId="{parent}" destId="{me}" srcOrd="{order}" destOrd="0" parTransId="t{me}"/>')
+            links.append(f'<dgm:cxn modelId="r{me}" type="presOf" srcId="{me}" destId="p{me}" srcOrd="0" destOrd="0"/>')
+            add(me, children)
+
+    add("0", tree)
+    points = points[:1] + points[1:][::-1]  # office keeps the points in the order they were made, not in the order of the tree
+    links = links[::-1]
+    return (f'<dgm:dataModel xmlns:dgm="{DGM_NS}" xmlns:a="{A_NS}"><dgm:ptLst>{"".join(points)}</dgm:ptLst>'
+            f'<dgm:cxnLst>{"".join(links)}</dgm:cxnLst><dgm:bg/><dgm:whole/></dgm:dataModel>').encode("utf-8")
+
+
+DIAGRAM_DATA_RT = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/diagramData"
+DIAGRAM_DATA_TYPE = "application/vnd.openxmlformats-officedocument.drawingml.diagramData+xml"
+DIAGRAM_GRAPHIC = ('<a:graphic xmlns:a="{a}"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
+                   '<dgm:relIds xmlns:dgm="{dgm}" xmlns:r="{r}" r:dm="{rid}" r:lo="" r:qs="" r:cs=""/></a:graphicData></a:graphic>')
+
+
+# a pptx slide with a smartart, its data in its own part like powerpoint makes it
+def smartart_pptx(f, tree):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    part = PptxPart(PptxPackURI("/ppt/diagrams/data1.xml"), DIAGRAM_DATA_TYPE, p.part.package, smartart_data(tree))
+    rid = slide.part.relate_to(part, DIAGRAM_DATA_RT)
+    graphic = DIAGRAM_GRAPHIC.format(a=A_NS, dgm=DGM_NS, r=R_NS, rid=rid)
+    slide.shapes._spTree.append(pptx_parse_xml(
+        '<p:graphicFrame xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" '
+        f'xmlns:a="{A_NS}"><p:nvGraphicFramePr><p:cNvPr id="4" name="Diagram 3"/><p:cNvGraphicFramePr/><p:nvPr/>'
+        '</p:nvGraphicFramePr><p:xfrm><a:off x="0" y="0"/><a:ext cx="6000000" cy="4000000"/></p:xfrm>'
+        f'{graphic}</p:graphicFrame>'))
+    p.save(str(f))
+    return read_pptx(f)
+
+
+# a docx with a paragraph and then a smartart in its own paragraph
+def smartart_docx(f, tree):
+    d = docx.Document()
+    d.add_paragraph("Πριν")
+    part = DocxPart(PackURI("/word/diagrams/data1.xml"), DIAGRAM_DATA_TYPE, smartart_data(tree), d.part.package)
+    rid = d.part.relate_to(part, DIAGRAM_DATA_RT)
+    graphic = DIAGRAM_GRAPHIC.format(a=A_NS, dgm=DGM_NS, r=R_NS, rid=rid)
+    d.add_paragraph()._p.append(parse_xml(
+        f'<w:r xmlns:w="{W_NS}"><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">'
+        f'<wp:extent cx="5486400" cy="3200400"/><wp:docPr id="1" name="Diagram 1"/>{graphic}</wp:inline></w:drawing></w:r>'))
+    d.save(str(f))
+    return read_docx(f)
+
+
+# a smartart without any text gives nothing
+def test_read_pptx_smartart_without_text(tmp_path):
+    assert smartart_pptx(tmp_path / "smartart.pptx", [("", [], None)]) == "# Slide 1"
+
+
+ORG_CHART = [("Διευθυντής", [("Γραμματεία", [], "asst"),
+                              ("Τμήμα Α", [("Ομάδα 1", [], None)], None),
+                              ("Τμήμα Β", [], None)], None)]
+ORG_CHART_TEXT = "[Diagram]\n- Διευθυντής\n  - Γραμματεία\n  - Τμήμα Α\n    - Ομάδα 1\n  - Τμήμα Β"
+
+# (tree, text)
+SMARTART_CASES = {
+    "list of three": ([("Ανάλυση", [], None), ("Σχεδίαση", [], None), ("Υλοποίηση", [], None)],
+                      "[Diagram]\n- Ανάλυση\n- Σχεδίαση\n- Υλοποίηση"),
+    "org chart with an assistant": (ORG_CHART, ORG_CHART_TEXT),
+    "item of two paragraphs is one line": ([(["Πρώτη", "φάση"], [], None), ("Δεύτερη φάση", [], None)],
+                                           "[Diagram]\n- Πρώτη φάση\n- Δεύτερη φάση"),
+    "empty item: its children move up": ([("", [("Α", [], None), ("Β", [], None)], None), ("Γ", [], None)],
+                                         "[Diagram]\n- Α\n- Β\n- Γ"),
+    "item in two pieces": ([(("Ανά", "λυση"), [], None)], "[Diagram]\n- Ανάλυση"),
+    "item with extra spaces": ([("  Ανάλυση   απαιτήσεων ", [], None)], "[Diagram]\n- Ανάλυση απαιτήσεων"),
+    "twelve items keep their order": ([(f"Βήμα {n}", [], None) for n in range(1, 13)],
+                                      "[Diagram]\n" + "\n".join(f"- Βήμα {n}" for n in range(1, 13))),
+}
+
+
+@pytest.mark.parametrize("tree, expected", SMARTART_CASES.values(), ids=SMARTART_CASES.keys())
+def test_read_pptx_smartart(tmp_path, tree, expected):
+    assert smartart_pptx(tmp_path / "smartart.pptx", tree) == "# Slide 1\n\n" + expected
+
+
+# a smartart in a word document
+def test_read_docx_smartart(tmp_path):
+    assert smartart_docx(tmp_path / "smartart.docx", ORG_CHART) == "Πριν\n\n" + ORG_CHART_TEXT
 
 # (file name, text in the file, text after parse_file)
 NORMALIZE_CASES = {
