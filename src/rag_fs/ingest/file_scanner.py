@@ -9,6 +9,7 @@ from collections import Counter
 import argparse
 
 MB=1024*1024
+ARCHIVE_EXT={".zip",".jar",".tar",".gz",".tgz",".7z",".rar"}
 
 @dataclass(frozen=True)
 class ScannedFile:
@@ -38,6 +39,7 @@ def file_sha256(path: str | Path)->str:
 def scan(corpus: CorpusConfig)->ScannerResult:
     result=ScannerResult()
     max_allowed_bytes=corpus.max_file_size_mb*(MB)
+    max_allowed_archive_bytes=corpus.max_archive_size_mb*(MB)
     for i,root in enumerate(corpus.roots):
         root_id=f"root_{i}"
         if not root.is_dir(): #we check if we can walk in this dir (allowed or able)
@@ -74,7 +76,11 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                     continue
                 try:
                     info = path.stat()
-                    if info.st_size > max_allowed_bytes:
+                    if path.suffix.lower() in ARCHIVE_EXT:#archives are dirs so size can be bigger
+                        max_allowed=max_allowed_archive_bytes
+                    else:
+                        max_allowed=max_allowed_bytes
+                    if info.st_size > max_allowed:
                         result.ignored.append((path, "too_large"))
                         continue
                     file_hash = file_sha256(path)#if this fails then is unreadable

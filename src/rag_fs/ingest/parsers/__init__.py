@@ -1,4 +1,4 @@
-from rag_fs.ingest.file_scanner import ScannedFile
+from rag_fs.ingest.file_scanner import ScannedFile,ARCHIVE_EXT
 from rag_fs.models import Document
 from .text import read_text
 from .tabular import read_csv,read_xlsx,read_xls
@@ -17,8 +17,8 @@ CODE_EXT={".py",".js",".ts",".java",".c",".cpp",".h",".cs",".go",".dart",".rs","
           ".hpp",".hh",".hxx",".cc",".cxx",".inl",".hlsl",".glsl",".shader",".cginc",".compute",".frag",".vert",
           ".y",".l",".asm",".s",".cmake",".bat",".cmd",".ps1",".lua",".pl",".scala",".kts",".mm",".asc",".alpha"}
 TABULAR_EXT={".csv",".tsv",".xlsx",".xls",".ods",".fods"}
-BINARY_EXT={".zip", ".gz", ".7z", ".rar", ".tar", ".exe", ".dll", ".so", ".bin", ".iso", ".mp3", ".wav", ".flac", ".mp4", ".mkv", 
-            ".avi", ".mov", ".ttf",".woff", ".pyc", ".class", ".jar", ".o", ".db", ".sqlite"}
+BINARY_EXT={".exe", ".dll", ".so", ".bin", ".iso", ".mp3", ".wav", ".flac", ".mp4", ".mkv", 
+            ".avi", ".mov", ".ttf",".woff", ".pyc", ".class", ".o", ".db", ".sqlite"}|ARCHIVE_EXT
 ACCENT_START=re.compile(r"[\u0384\u00b4][ΑΕΗΙΟΥΩ]")#greek characters with accents that break
 CP1252_SIGNS="".join(bytes([b]).decode("cp1252") for b in range(0x80,0xa0) if b not in (0x81,0x8d,0x8f,0x90,0x9d))
 MOJIBAKE=re.compile("[\u0080-\u00ff"+re.escape(CP1252_SIGNS)+"]+")#possible broken characters

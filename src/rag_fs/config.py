@@ -12,7 +12,7 @@ class CorpusConfig:
     ignore_globs: list[str] = field(default_factory=lambda: [
         "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*",
         "desktop.ini", "Thumbs.db", ".DS_Store", "~$*", "._*","*.asset","*.mat","*.anim","*.prefab","*.controller",
-        "*.shadergraph","*.unity","*.mixer","*.inputactions","*.iml","*.csproj","*.sln","*.slnx"
+        "*.shadergraph","*.unity","*.mixer","*.inputactions","*.iml","*.csproj","*.sln","*.slnx","*.synctex.gz"
     ])
     ignore_dirs_with: dict[str, list[str]] = field(default_factory=lambda: {#we ignore these dirs only if they are generated with these files
         "Library": ["ArtifactDB", "PackageCache"],
@@ -28,6 +28,8 @@ class CorpusConfig:
         "*.meta"
     ])
     max_file_size_mb: int = 50
+    max_archive_size_mb: int=2048
+    max_archive_depth: int=4
     follow_symlinks: bool = False
 
 @dataclass(frozen=True)

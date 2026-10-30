@@ -294,3 +294,46 @@ def test_ppm_and_aux_files_are_kept(tmp_path, rel):
     (root / rel).parent.mkdir(parents=True)
     (root / rel).write_text("x")
     assert what_happened(root, scan(CorpusConfig(roots=[root])), rel) == "kept"
+
+
+ARCHIVES = ["work.zip", "lib.JAR", "data.tar", "data.tar.gz", "src.tgz", "back.7z", "old.rar", "notes.txt.gz"]
+
+
+# a corpus of one file `name` with `size` MB, scanned with 1 MB for files and 3 MB for archives
+def scan_one(tmp_path, name, size):
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / name).write_bytes(b"x" * int(size * 1024 * 1024))
+    return scan(CorpusConfig(roots=[root], max_file_size_mb=1, max_archive_size_mb=3))
+
+
+# an archive is a folder, not a document: bigger than the limit of files is kept, its files have that limit inside
+@pytest.mark.parametrize("name", ARCHIVES)
+def test_archive_bigger_than_a_file_is_kept(tmp_path, name):
+    result = scan_one(tmp_path, name, 2)
+    assert [str(f.rel_path) for f in result.files] == [name] and result.ignored == []
+
+
+# up to the limit of archives the archive is kept, past it it is too large like any file
+@pytest.mark.parametrize("size, kept", [
+    pytest.param(3, True, id="at the limit"),
+    pytest.param(3.5, False, id="past the limit"),
+])
+def test_archive_limit(tmp_path, size, kept):
+    result = scan_one(tmp_path, "work.zip", size)
+    assert ([str(f.rel_path) for f in result.files], [r for _, r in result.ignored]) == \
+        ((["work.zip"], []) if kept else ([], ["too_large"]))
+
+
+# the same size for a file that is not an archive is still too large, also with archive words in the name
+@pytest.mark.parametrize("name", ["notes.txt", "zip.txt", "work.zip.txt", "data.gz.bak"])
+def test_not_archive_bigger_than_a_file(tmp_path, name):
+    result = scan_one(tmp_path, name, 2)
+    assert result.files == [] and [r for _, r in result.ignored] == ["too_large"]
+
+
+# the archive extensions are written once, in the scanner, and the parsers use the same set
+def test_archive_extensions_in_one_place():
+    from rag_fs.ingest import file_scanner, parsers
+    assert parsers.ARCHIVE_EXT is file_scanner.ARCHIVE_EXT
+    assert file_scanner.ARCHIVE_EXT <= parsers.BINARY_EXT
