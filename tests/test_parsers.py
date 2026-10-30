@@ -22,7 +22,7 @@ from odf.chart import Chart as OdfChart, PlotArea, Series as OdfSeries, Title as
 from odf.draw import Frame, Object as OdfObject, Page, TextBox as OdfTextBox
 from odf.opendocument import OpenDocumentChart, OpenDocumentPresentation, OpenDocumentSpreadsheet, OpenDocumentText
 from odf.table import CoveredTableCell, Table as OdfTable, TableCell, TableHeaderRows, TableRow, TableRows
-from odf.text import A as OdfA, LineBreak as OdfLineBreak, P as OdfP, Span as OdfSpan
+from odf.text import A as OdfA, H as OdfH, LineBreak as OdfLineBreak, P as OdfP, Span as OdfSpan
 from PIL import Image
 from pptx.chart.chart import Chart as PptxChart
 from pptx.chart.data import CategoryChartData, XyChartData
@@ -2183,6 +2183,104 @@ def test_read_pptx_smartart(tmp_path, tree, expected):
 # a smartart in a word document
 def test_read_docx_smartart(tmp_path):
     assert smartart_docx(tmp_path / "smartart.docx", ORG_CHART) == "Πριν\n\n" + ORG_CHART_TEXT
+
+FLAT_NS = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+           'xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" '
+           'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+           'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+           'xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" '
+           'xmlns:presentation="urn:oasis:names:tc:opendocument:xmlns:presentation:1.0" '
+           'xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" '
+           'xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" '
+           'xmlns:xlink="http://www.w3.org/1999/xlink" '
+           'xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" '
+           'xmlns:dc="http://purl.org/dc/elements/1.1/" '
+           'xmlns:config="urn:oasis:names:tc:opendocument:xmlns:config:1.0"')
+
+
+# a flat xml file of libreoffice: everything that a zip keeps in meta, settings, styles and content, in one document
+def flat_odf(mimetype, body, styles="", automatic=""):
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n<office:document {FLAT_NS} office:version="1.3" office:mimetype="{mimetype}">'
+            '<office:meta><meta:generator>LibreOffice/7.6</meta:generator><dc:title>Σημειώσεις</dc:title></office:meta>'
+            '<office:settings><config:config-item-set config:name="ooo:view-settings"/></office:settings>'
+            '<office:font-face-decls><style:font-face style:name="Liberation Serif" svg:font-family="Liberation Serif"/></office:font-face-decls>'
+            f'<office:styles>{styles}</office:styles>'
+            f'<office:automatic-styles>{automatic}</office:automatic-styles>'
+            '<office:master-styles><style:master-page style:name="Default"/></office:master-styles>'
+            f'<office:body>{body}</office:body></office:document>').encode("utf-8")
+
+
+FLAT_TEXT = flat_odf(
+    "application/vnd.oasis.opendocument.text",
+    '<office:text><text:h text:outline-level="1">Εισαγωγή</text:h>'
+    '<text:p>Δες τον <text:a xlink:type="simple" xlink:href="https://x.gr/guide">οδηγό</text:a> εδώ.</text:p>'
+    '<text:p text:style-name="P1">Υποενότητα</text:p>'
+    '<table:table table:name="Βαθμοί"><table:table-column table:number-columns-repeated="2"/>'
+    '<table:table-row><table:table-cell office:value-type="string"><text:p>Όνομα</text:p></table:table-cell>'
+    '<table:table-cell office:value-type="string"><text:p>Βαθμός</text:p></table:table-cell></table:table-row>'
+    '<table:table-row><table:table-cell office:value-type="string"><text:p>Μαρία</text:p></table:table-cell>'
+    '<table:table-cell office:value-type="float" office:value="9"><text:p>9</text:p></table:table-cell></table:table-row>'
+    '</table:table></office:text>',
+    styles='<style:style style:name="Heading_20_2" style:display-name="Heading 2" style:family="paragraph" style:default-outline-level="2"/>',
+    automatic='<style:style style:name="P1" style:family="paragraph" style:parent-style-name="Heading_20_2"/>')
+FLAT_TEXT_READ = "# Εισαγωγή\n\nΔες τον οδηγό (https://x.gr/guide) εδώ.\n\n## Υποενότητα\n\nΌνομα: Μαρία; Βαθμός: 9"
+
+FLAT_SHEET = flat_odf(
+    "application/vnd.oasis.opendocument.spreadsheet",
+    '<office:spreadsheet><table:table table:name="Βαθμοί">'
+    '<table:table-row><table:table-cell office:value-type="string"><text:p>Όνομα</text:p></table:table-cell>'
+    '<table:table-cell office:value-type="string"><text:p>Βαθμός</text:p></table:table-cell></table:table-row>'
+    '<table:table-row><table:table-cell office:value-type="string"><text:p>Μαρία</text:p></table:table-cell>'
+    '<table:table-cell office:value-type="float" office:value="9"><text:p>9</text:p></table:table-cell></table:table-row>'
+    '</table:table></office:spreadsheet>')
+
+FLAT_SLIDES = flat_odf(
+    "application/vnd.oasis.opendocument.presentation",
+    '<office:presentation><draw:page draw:name="page1" draw:master-page-name="Default">'
+    '<draw:frame presentation:class="title"><draw:text-box><text:p>Αλγόριθμοι</text:p></draw:text-box></draw:frame>'
+    '<draw:frame presentation:class="outline"><draw:text-box><text:p>Ταξινόμηση με συγχώνευση</text:p></draw:text-box></draw:frame>'
+    '</draw:page></office:presentation>')
+
+# (file name, bytes, content type, text)
+FLAT_CASES = {
+    "text": ("notes.fodt", FLAT_TEXT, "prose", FLAT_TEXT_READ),
+    "spreadsheet": ("grades.fods", FLAT_SHEET, "tabular", "# Sheet: Βαθμοί\nΌνομα: Μαρία; Βαθμός: 9"),
+    "presentation": ("lecture.fodp", FLAT_SLIDES, "prose", "# Slide 1: Αλγόριθμοι\n\nΤαξινόμηση με συγχώνευση"),
+    "extension in capitals": ("NOTES.FODT", FLAT_TEXT, "prose", FLAT_TEXT_READ),
+}
+
+
+@pytest.mark.parametrize("name, data, content_type, expected", FLAT_CASES.values(), ids=FLAT_CASES.keys())
+def test_parse_file_reads_flat_xml(tmp_path, name, data, content_type, expected):
+    doc = parse_one(tmp_path, name, data)
+    assert (doc.parse_status, doc.content_type, doc.raw_text) == ("ok", content_type, expected)
+
+
+# the same document as a flat xml and as an odt gives the same text
+def test_flat_xml_reads_like_its_zip(tmp_path):
+    doc = OpenDocumentText()
+    heading = OdfH(outlinelevel=1, text="Εισαγωγή")
+    doc.text.addElement(heading)
+    doc.text.addElement(OdfP(text="Πρώτη παράγραφος."))
+    odt = tmp_path / "notes.odt"
+    doc.save(str(odt))
+    flat = flat_odf("application/vnd.oasis.opendocument.text",
+                    '<office:text><text:h text:outline-level="1">Εισαγωγή</text:h><text:p>Πρώτη παράγραφος.</text:p></office:text>')
+    assert parse_one(tmp_path, "notes.fodt", flat).raw_text == read_odf(odt)
+
+
+# (file name, bytes) files that are not flat xml of libreoffice fail, they are not read as text
+FLAT_BROKEN = {
+    "broken xml": ("notes.fodt", FLAT_TEXT[:200]),
+    "xml that is not a document": ("notes.fodt", b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><text>x</text></svg>'),
+    "text document named as a spreadsheet": ("grades.fods", FLAT_TEXT),
+}
+
+
+@pytest.mark.parametrize("name, data", FLAT_BROKEN.values(), ids=FLAT_BROKEN.keys())
+def test_parse_file_flat_xml_that_is_broken(tmp_path, name, data):
+    doc = parse_one(tmp_path, name, data)
+    assert (doc.parse_status, doc.raw_text) == ("failed", "")
 
 # (file name, text in the file, text after parse_file)
 NORMALIZE_CASES = {

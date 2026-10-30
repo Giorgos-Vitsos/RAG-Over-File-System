@@ -6,6 +6,9 @@ from odf.opendocument import load, OpenDocument
 from odf.style import Style
 from .tabular import fill_merged, format_rows, format_sheets, cell_to_str
 from .text import clean_lines,with_address
+import io
+import zipfile
+import xml.etree.ElementTree as ET
 
 ODF_ROW_GROUPS=("table:table-header-rows","table:table-row-group","table:table-rows")
 HEADING_NAME=re.compile(r"Heading_20_(\d+)")
@@ -19,12 +22,21 @@ ODF_SKIP={
     "text:sequence-decls","text:variable-decls","text:user-field-decls","text:dde-connection-decls","office:forms",
     "draw:object-ole"
 }
+OFFICE="{urn:oasis:names:tc:opendocument:xmlns:office:1.0}"#namespace of odf doc
+FLAT_EXT=(".fodt",".fods",".fodp")#odf documents saved as a single file
+FLAT_CONTENT=("font-face-decls","automatic-styles","scripts","body")#parts of a flat file that go to content.xml
+FLAT_STYLES=("font-face-decls","styles","automatic-styles","master-styles")#parts of a flat file that go to styles.xml
+MANIFEST=('<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">'
+          '<manifest:file-entry manifest:full-path="/" manifest:media-type="{mimetype}"/>'
+          '<manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>'
+          '<manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>'
+          '</manifest:manifest>')#the list of files a zip odf has
 
 def is_skipped(tag:str)->bool:
     return tag in ODF_SKIP or tag.endswith(":annotation")
 
 def read_odf(path: Path)->str:
-    file=load(str(path))
+    file=load_odf(path)
     for node in file.body.childNodes:
         if node.tagName=="office:text":
             return read_odt(file,node)
@@ -201,7 +213,7 @@ def odf_table_rows(table):
     return rows,merges,header_rows
 
 def read_ods(path: Path)->str:
-    doc=load(str(path))
+    doc=load_odf(path)
     content=[node for node in doc.body.childNodes if node.tagName=="office:spreadsheet"]
     if not content:#an odt or odp with the wrong extension
         raise ValueError("Not an .ods spreadsheet")
@@ -295,3 +307,30 @@ def odf_chart_text(chart)->str:
             if values:#a category without a value is left out
                 lines.append(f"{cell_to_str(row[0])}: "+"; ".join(values))
     return "\n".join(lines)
+
+def load_odf(path:Path)->OpenDocument:
+    if path.suffix.lower() in FLAT_EXT:#single file
+        return load(flat_to_zip(path))
+    return load(str(path))#zip
+
+def flat_to_zip(path:Path)->io.BytesIO:
+    root=ET.fromstring(path.read_bytes())
+    mimetype=root.get(OFFICE+"mimetype")
+    if root.tag!=OFFICE+"document" or not mimetype:#wrong type file
+        raise ValueError(f"{path} is not an odf document")
+    content=ET.Element(OFFICE+"document-content")
+    styles=ET.Element(OFFICE+"document-styles")
+    for child in root:
+        name=child.tag.removeprefix(OFFICE)#the name without the namespace
+        if name in FLAT_CONTENT:
+            content.append(child)
+        if name in FLAT_STYLES:
+            styles.append(child)
+    buffer=io.BytesIO()#new empty file
+    with zipfile.ZipFile(buffer,"w") as z:#we write the zip file format
+        z.writestr("mimetype",mimetype)
+        z.writestr("META-INF/manifest.xml",MANIFEST.format(mimetype=mimetype))
+        z.writestr("content.xml",ET.tostring(content,encoding="utf-8",xml_declaration=True))
+        z.writestr("styles.xml",ET.tostring(styles,encoding="utf-8",xml_declaration=True))
+    buffer.seek(0)#reset to start so its read correctly
+    return buffer
