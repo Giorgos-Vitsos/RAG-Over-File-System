@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from rag_fs.models import (
-    Chunk, Document, GoldSpan, Query, load_jsonl, save_jsonl, to_relative,
+    Chunk, Document, GoldSpan, Query, load_jsonl, save_jsonl,
 )
 
 
@@ -62,19 +62,3 @@ def test_saved_file_keeps_greek_readable(tmp_path):
 
     assert "Γεια" in file.read_text(encoding="utf-8")
 
-
-# to_relative gives the path of the file inside the root
-def test_to_relative_strips_the_root(tmp_path):
-    root = tmp_path / "corpus"
-    file = root / "bills" / "2024" / "march.pdf"
-
-    assert to_relative(file, root) == Path("bills/2024/march.pdf")
-
-
-# a file outside the root is an error
-def test_to_relative_rejects_file_outside_root(tmp_path):
-    root = tmp_path / "corpus"
-    outside = tmp_path / "secret" / "id_rsa"
-
-    with pytest.raises(ValueError):
-        to_relative(outside, root)

@@ -4,7 +4,7 @@ from pathlib import Path
 from odf import teletype
 from odf.opendocument import load, OpenDocument
 from odf.style import Style
-from .tabular import fill_merged, format_rows, format_sheets, cell_to_str
+from .tables import cell_to_str,fill_merged,format_chart,format_rows,format_sheets
 from .text import clean_lines,with_address
 import io
 import zipfile
@@ -89,7 +89,7 @@ def gather_data(node,headings:dict[str,int] | None)->list[str]:
     blocks=[]
     if tag in ("text:p","text:h"):
         shapes=[]#alt data like images
-        text=get_paragraph_text(node,shapes)
+        text=clean_lines(odf_inline(node,shapes))
         for shape in shapes:
             blocks.extend(gather_data(shape,headings))
         if not text:#if no other text we return only the alt
@@ -121,9 +121,6 @@ def gather_data(node,headings:dict[str,int] | None)->list[str]:
         return []
     blocks.extend(read_blocks(node,headings))#group blocks
     return blocks
-
-def get_paragraph_text(node,shapes:list)->str:
-    return clean_lines(odf_inline(node,shapes))
 
 def odf_inline(node,shapes:list)->str:
     parts=[]
@@ -288,10 +285,7 @@ def odf_chart_text(chart)->str:
         elif child.tagName=="table:table":#the data of the chart
             rows,_,_=odf_table_rows(child)
     name=" ".join(" ".join(title_parts).split())
-    if name:
-        lines=[f"[Chart: {name}]"]
-    else:
-        lines=["[Chart]"]
+    points=[]
     if rows:
         names=rows[0]#the first row has the names of the series
         for row in rows[1:]:#the rest are category or value
@@ -304,9 +298,8 @@ def odf_chart_text(chart)->str:
                 else:
                     series_name=""
                 values.append(f"{series_name} {cell_to_str(row[column])}".strip())
-            if values:#a category without a value is left out
-                lines.append(f"{cell_to_str(row[0])}: "+"; ".join(values))
-    return "\n".join(lines)
+            points.append((cell_to_str(row[0]),values))
+    return format_chart(name,points)
 
 def load_odf(path:Path)->OpenDocument:
     if path.suffix.lower() in FLAT_EXT:#single file

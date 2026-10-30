@@ -28,8 +28,8 @@ class CorpusConfig:
         "*.meta"
     ])
     max_file_size_mb: int = 50
-    max_archive_size_mb: int=2048
-    max_archive_depth: int=4
+    max_archive_size_mb: int = 2048
+    max_archive_depth: int = 4
     follow_symlinks: bool = False
 
 @dataclass(frozen=True)

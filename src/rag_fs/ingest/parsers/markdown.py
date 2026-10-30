@@ -2,8 +2,8 @@ import re
 from pathlib import Path
 from bs4 import BeautifulSoup
 from markdown_it import MarkdownIt
-from .tabular import format_rows
-from .text import clean_lines, read_text, with_address
+from .tables import format_rows
+from .text import clean_lines, read_text, unify_newlines, with_address
 
 MARKDOWN=MarkdownIt("commonmark").enable("table").enable("strikethrough")#markdown reader 
 HEADING_ANCHOR=re.compile(r"\s*\{#[^}]*\}\s*$")#google writes id after every heading this will be used to remove them
@@ -11,7 +11,7 @@ FRONT_MATTER=re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)",re.S)#possible settings at
 BREAK_TAG=re.compile(r"<br\s*/?>",re.I)
 
 def read_markdown(path:Path)->str:
-    text=read_text(path).replace("\r\n","\n").replace("\r","\n")
+    text=unify_newlines(read_text(path))
     blocks=[]
     front=FRONT_MATTER.match(text)#if we have settings on top
     if front:

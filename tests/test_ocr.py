@@ -8,7 +8,8 @@ from rag_fs.config import CorpusConfig, OCRConfig
 from rag_fs.ingest.file_scanner import scan
 from rag_fs.ingest.parsers import ocr as ocr_module
 from rag_fs.ingest.parsers import parse_file
-from rag_fs.ingest.parsers.ocr import check_ocr, join_broken_pages, ocr_image, ocr_sample, read_image
+from rag_fs.ingest.parsers.ocr import check_ocr, ocr_image, ocr_sample, read_image
+from rag_fs.ingest.parsers.pages import join_broken_pages
 
 
 # a white picture with the html written on it, like a scanned page

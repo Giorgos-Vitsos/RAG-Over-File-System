@@ -81,8 +81,3 @@ def dict_to_object(cls,d):
             spans.append(dict_to_object(GoldSpan,g))
         d["gold"]=spans
     return cls(**d)
-
-def to_relative(file_path, root):
-    file_path = Path(file_path).expanduser().resolve()
-    root = Path(root).expanduser().resolve()
-    return file_path.relative_to(root)

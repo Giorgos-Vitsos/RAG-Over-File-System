@@ -38,13 +38,15 @@ from pptx.util import Inches as PptxInches
 
 from rag_fs.config import CorpusConfig
 from rag_fs.ingest.file_scanner import scan
-from rag_fs.ingest.parsers import PARSERS, parse_file, tabular
+from rag_fs.ingest.parsers import PARSERS, parse_file, tables, tabular
 from rag_fs.ingest.parsers.office import (
-    field_address, format_shape, heading_level, read_docx, read_pptx, read_rtf, read_slide_variants,
+    field_address, format_shape, heading_level, read_docx, read_pptx, read_slide_variants,
     read_word_variants,
 )
 from rag_fs.ingest.parsers.opendocument import read_odf, read_ods
-from rag_fs.ingest.parsers.tabular import cell_to_str, fill_merged, format_rows, read_csv, read_xls, read_xlsx
+from rag_fs.ingest.parsers.rtf import read_rtf
+from rag_fs.ingest.parsers.tables import cell_to_str, fill_merged, format_rows
+from rag_fs.ingest.parsers.tabular import read_csv, read_xls, read_xlsx
 from rag_fs.ingest.parsers.text import read_text
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -310,7 +312,7 @@ def test_cell_to_str(value, expected):
     ("ΗΥ100", False), ("Όνομα", False), ("", False), ("N/A", False),
 ])
 def test_looks_like_value(cell, expected):
-    assert tabular.looks_like_value(cell) == expected
+    assert tables.looks_like_value(cell) == expected
 
 
 N = None

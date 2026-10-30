@@ -986,3 +986,21 @@ def test_read_pdf_keeps_a_hyphen_between_capitals_used_elsewhere(tmp_path):
 # an acronym at the end of a page keeps its hyphen with the next page
 def test_read_pdf_keeps_the_hyphen_after_capitals_across_pages(tmp_path):
     assert read(tmp_path, ["<p>Τα PDF-</p>", "<p>αρχεία ανοίγουν.</p>"]) == "Τα PDF-αρχεία ανοίγουν."
+
+
+# latin letters that the OCR read instead of greek are fixed only on the scanned pages: a page with real text keeps
+# what was written, but its greek words help to fix the scanned page
+def test_parse_file_fixes_lookalikes_only_on_scanned_pages(tmp_path, fake_ocr):
+    fake_ocr["answer"] = ("Η άσκηση KAI η εργασία παραδίδονται μαζί.", 95.0)
+    scan_pdf(tmp_path, [[(0.2, 0.3, "<p>Η εργασία KAI η άσκηση και οι λύσεις.</p>")], [(0.2, 0.5, SCAN)]])
+    doc = parse_one(tmp_path, "mixed.pdf", (tmp_path / "scan.pdf").read_bytes())
+    assert (doc.parse_status, doc.raw_text) == (
+        "ocr", "Η εργασία KAI η άσκηση και οι λύσεις.\n\nΗ άσκηση ΚΑΙ η εργασία παραδίδονται μαζί.")
+
+
+# a word broken from a page with text into a scanned page is one word, and the OCR part of it is fixed
+def test_parse_file_fixes_lookalikes_of_a_word_broken_into_a_scanned_page(tmp_path, fake_ocr):
+    fake_ocr["answer"] = ("ματισμού KAI η λύση της εργασίας.", 95.0)
+    scan_pdf(tmp_path, [[(0.2, 0.3, "<p>Η εργασία και η άσκηση του προγραμ-</p>")], [(0.2, 0.5, SCAN)]])
+    doc = parse_one(tmp_path, "mixed.pdf", (tmp_path / "scan.pdf").read_bytes())
+    assert doc.raw_text == "Η εργασία και η άσκηση του προγραμματισμού ΚΑΙ η λύση της εργασίας."

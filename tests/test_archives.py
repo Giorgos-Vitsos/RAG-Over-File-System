@@ -12,7 +12,7 @@ import pytest
 import tempfile
 
 from rag_fs.config import CorpusConfig
-from rag_fs.ingest.archives import read_archive
+from rag_fs.ingest.pipeline import read_archive
 from rag_fs.ingest.file_scanner import scan
 
 NOTES = "Σημειώσεις του μαθήματος για την εξέταση."

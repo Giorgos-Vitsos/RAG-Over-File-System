@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from rag_fs.config import CorpusConfig
-from rag_fs.ingest.file_scanner import scan
+from rag_fs.ingest.file_scanner import scan, to_relative
 
 # sha256 of the text "hello", the content of notes.txt
 HELLO_SHA256 = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
@@ -332,8 +332,24 @@ def test_not_archive_bigger_than_a_file(tmp_path, name):
     assert result.files == [] and [r for _, r in result.ignored] == ["too_large"]
 
 
-# the archive extensions are written once, in the scanner, and the parsers use the same set
-def test_archive_extensions_in_one_place():
-    from rag_fs.ingest import file_scanner, parsers
-    assert parsers.ARCHIVE_EXT is file_scanner.ARCHIVE_EXT
-    assert file_scanner.ARCHIVE_EXT <= parsers.BINARY_EXT
+# the extension sets are written once, in filetypes, and the parsers use the same sets
+def test_extensions_in_one_place():
+    from rag_fs.ingest import filetypes, parsers
+    assert parsers.BINARY_EXT is filetypes.BINARY_EXT
+    assert filetypes.ARCHIVE_EXT <= filetypes.BINARY_EXT
+
+# to_relative gives the path of the file inside the root
+def test_to_relative_strips_the_root(tmp_path):
+    root = tmp_path / "corpus"
+    file = root / "bills" / "2024" / "march.pdf"
+
+    assert to_relative(file, root) == Path("bills/2024/march.pdf")
+
+
+# a file outside the root is an error
+def test_to_relative_rejects_file_outside_root(tmp_path):
+    root = tmp_path / "corpus"
+    outside = tmp_path / "secret" / "id_rsa"
+
+    with pytest.raises(ValueError):
+        to_relative(outside, root)
