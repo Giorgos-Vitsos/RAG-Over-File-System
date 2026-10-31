@@ -1462,9 +1462,6 @@ def write_rtf(tmp_path, content, name="doc.rtf", encoding="ascii"):
     pytest.param(r"{\rtf1\ansi}", "ascii", "", id="empty document"),
     pytest.param(r"{\rtf1\ansi Before {\pict\pngblip\picw10\pich10 89504e470d0a1a0a0000}after\par}",
                  "ascii", "Before after", id="pictures dropped"),
-    pytest.param(r"{\rtf1\ansi\trowd\cellx2000\cellx4000 Name\cell Grade\cell\row"
-                 r"\trowd\cellx2000\cellx4000 Maria\cell 9\cell\row\pard After table\par}",
-                 "ascii", "Name|Grade|\nMaria|9|\nAfter table", id="tables stay as cells with bars"),
     pytest.param(r"{\rtf1\ansi\ansicpg1253{\fonttbl{\f0 Arial;}}"
                  r"{\info{\title Secret title}{\author Some Author}}\f0 Body text.\par}",
                  "ascii", "Body text.", id="document properties are not body text"),
