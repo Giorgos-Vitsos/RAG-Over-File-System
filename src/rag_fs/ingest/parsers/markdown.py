@@ -11,7 +11,10 @@ FRONT_MATTER=re.compile(r"\A---\n(.*?)\n---(?:\n|\Z)",re.S)#possible settings at
 BREAK_TAG=re.compile(r"<br\s*/?>",re.I)
 
 def read_markdown(path:Path)->str:
-    text=unify_newlines(read_text(path))
+    return markdown_text(read_text(path))
+
+def markdown_text(text:str)->str:
+    text=unify_newlines(text)
     blocks=[]
     front=FRONT_MATTER.match(text)#if we have settings on top
     if front:

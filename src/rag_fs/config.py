@@ -7,7 +7,8 @@ class CorpusConfig:
     roots: list[Path] = field(default_factory=list)
     ignore_dirs: list[str] = field(default_factory=lambda: [
         ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules",".pytest_cache",".mypy_cache","*.egg-info",
-        "__MACOSX", ".ipynb_checkpoints", ".idea", ".vscode", ".vs", ".settings", ".metadata", ".gradle", "cmake-build-*"
+        "__MACOSX", ".ipynb_checkpoints", ".idea", ".vscode", ".vs", ".settings", ".metadata", ".gradle", "cmake-build-*",
+        "nbproject"
     ])
     ignore_globs: list[str] = field(default_factory=lambda: [
         "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*",

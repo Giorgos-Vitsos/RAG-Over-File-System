@@ -11,6 +11,7 @@ from .pdf import read_pdf
 from .rtf import read_rtf
 from .tabular import read_csv,read_xls,read_xlsx
 from .text import normalize,read_text,unify_newlines
+from .web import read_html,read_notebook,read_xml
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,11 @@ PARSERS={
     ".otp": read_odf,
     ".md": read_markdown,
     ".markdown": read_markdown,
+    ".html": read_html,
+    ".htm": read_html,
+    ".xhtml": read_html,
+    ".xml": read_xml,
+    ".ipynb": read_notebook,
 }
 for ext in CODE_EXT:
     PARSERS[ext]=read_text
