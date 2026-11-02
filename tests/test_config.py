@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from rag_fs.config import ChunkingConfig, Config, load_config
+from rag_fs.config import ChunkingConfig, Config, IngestConfig, load_config
 
 
 # the defaults live in config.py, so Config() works without any yaml file
@@ -117,3 +117,21 @@ def test_ocr_settings_from_yaml(tmp_path):
     assert ocr.languages == ["deu", "eng"]
     assert ocr.dpi == 200
     assert ocr.min_chars == 20
+
+
+# the ingest has its own section: 2 worker processes by default, so the computer stays usable (D74)
+def test_ingest_workers_default():
+    assert Config().ingest == IngestConfig(workers=2)
+
+
+def test_ingest_workers_from_yaml(tmp_path):
+    yaml_file = tmp_path / "exp.yaml"
+    yaml_file.write_text("ingest:\n  workers: 8\n")
+    assert load_config(yaml_file).ingest.workers == 8
+
+
+# 0 or fewer workers would read nothing
+@pytest.mark.parametrize("workers", [0, -1])
+def test_ingest_workers_must_be_positive(workers):
+    with pytest.raises(ValueError):
+        IngestConfig(workers=workers)

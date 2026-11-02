@@ -1,11 +1,17 @@
+import hashlib
 import io
+import os
+import time
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from rag_fs.config import CorpusConfig, OCRConfig
-from rag_fs.ingest.cache import drop_cached, open_cache
-from rag_fs.ingest.parsers import PARSERS
+from rag_fs.ingest import pipeline
+from rag_fs.ingest.cache import drop_cached, get_cached, open_cache
+from rag_fs.ingest.file_scanner import ScannedFile
+from rag_fs.ingest.parsers import OCR_PARSERS, PARSERS
 from rag_fs.ingest.parsers.text import read_text
 from rag_fs.ingest.pipeline import read_corpus
 
@@ -211,3 +217,158 @@ def test_without_cache_everything_is_read(tmp_path, reads):
     read_corpus(CorpusConfig(roots=[root]))
     read_corpus(CorpusConfig(roots=[root]))
     assert reads == ["notes.txt", "notes.txt"]
+
+
+# piece C3: worker processes at low priority, cheap files first (D74)
+FORK_WARNING = pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+
+
+# the workers start with "forkserver": a clean process, safe when this one runs threads (numpy does)
+def test_workers_start_with_forkserver():
+    assert pipeline.START_METHOD == "forkserver"
+
+
+# the readers of .txt, .md and .pdf write the names of the files they really read in a file,
+# because they run in other processes. A clean process would not have these readers,
+# so these tests start the workers with fork, which copies this process as it is
+@pytest.fixture
+def logged(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    log = tmp_path / "reads.log"
+    log.touch()
+    def logger(reader):
+        def logged_reader(path, *args):
+            with open(log, "a", encoding="utf-8") as f:
+                f.write(path.name + "\n")
+            return reader(path, *args)
+        return logged_reader
+    monkeypatch.setitem(PARSERS, ".txt", logger(PARSERS[".txt"]))
+    monkeypatch.setitem(PARSERS, ".md", logger(PARSERS[".md"]))
+    monkeypatch.setitem(OCR_PARSERS, ".pdf", logger(lambda path, ocr: ("Κείμενο από OCR.", True)))
+    return lambda: log.read_text(encoding="utf-8").split()
+
+
+MIXED = {
+    "notes.txt": NOTES, "a/b.md": "# Title\n\nText.", "main.py": CODE, "scan.pdf": b"%PDF-1.4 fake",
+    "copy/notes.txt": NOTES, "work.zip": zip_bytes({"in/inside.txt": "Μέσα.", "in/main.py": CODE}),
+    "broken.zip": "not a zip", "empty.txt": "", "image.class": b"\xca\xfe\xba\xbe",
+}
+
+
+def docs_of(root, **settings):
+    return read_corpus(CorpusConfig(roots=[root]), **settings)
+
+
+# with workers (started the normal way, with the real readers) the documents are the same, in the same order
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.parametrize("workers", [1, 3])
+@pytest.mark.parametrize("with_cache", [False, True], ids=["no cache", "cache"])
+def test_workers_give_the_same_documents(tmp_path, workers, with_cache):
+    root = tmp_path / "corpus"
+    write(root, MIXED)
+    plain = docs_of(root)
+    db = open_cache(tmp_path / "data" / "cache.db") if with_cache else None
+    assert docs_of(root, db=db, workers=workers) == plain
+
+
+# the same with the test readers, which also give an OCR document
+@FORK_WARNING
+def test_workers_give_the_same_documents_with_ocr(tmp_path, logged):
+    root = tmp_path / "corpus"
+    write(root, MIXED)
+    plain = docs_of(root)
+    assert ("scan.pdf", "ocr") in [(str(d.file_path), d.parse_status) for d in plain]
+    assert docs_of(root, workers=2) == plain
+
+
+# with workers the cache works as before: the second run reads nothing
+@FORK_WARNING
+def test_workers_use_the_cache(tmp_path, db, logged):
+    root = tmp_path / "corpus"
+    write(root, MIXED)
+    first = docs_of(root, db=db, workers=2)
+    read_once = logged()
+    assert docs_of(root, db=db, workers=2) == first
+    assert logged() == read_once
+
+
+# the same file twice is read once, also when two workers could read it at the same time (D95)
+@FORK_WARNING
+@pytest.mark.parametrize("with_cache", [False, True], ids=["no cache", "cache"])
+def test_workers_read_the_same_file_once(tmp_path, logged, with_cache):
+    root = tmp_path / "corpus"
+    write(root, {f"{i}/notes.txt": NOTES for i in range(6)})
+    db = open_cache(tmp_path / "data" / "cache.db") if with_cache else None
+    docs = docs_of(root, db=db, workers=4)
+    assert [(str(d.file_path), d.raw_text) for d in docs] == [(f"{i}/notes.txt", NOTES) for i in range(6)]
+    assert logged() == ["notes.txt"]
+
+
+# a copy in another root of the corpus keeps its own root, path and date
+@FORK_WARNING
+def test_workers_copy_in_another_root(tmp_path, logged):
+    first, second = tmp_path / "first", tmp_path / "second"
+    write(first, {"notes.txt": NOTES})
+    write(second, {"b/copy.txt": NOTES})
+    os.utime(second / "b" / "copy.txt", (1_000_000, 1_000_000))
+    docs = read_corpus(CorpusConfig(roots=[first, second]), workers=2)
+    assert [(str(d.file_path), d.root_id, d.last_modified) for d in docs] == [
+        ("notes.txt", "root_0", (first / "notes.txt").stat().st_mtime), ("b/copy.txt", "root_1", 1_000_000)]
+    assert logged() == ["notes.txt"]
+
+
+# a file that fails in a worker is failed, and the run goes on
+@FORK_WARNING
+def test_workers_failed_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root = tmp_path / "corpus"
+    write(root, {"a.txt": NOTES, "b.txt": "Β."})
+    def broken(path):
+        if path.name == "a.txt":
+            raise ValueError("broken")
+        return read_text(path)
+    monkeypatch.setitem(PARSERS, ".txt", broken)
+    assert [(str(d.file_path), d.parse_status) for d in docs_of(root, workers=2)] == [("a.txt", "failed"), ("b.txt", "ok")]
+
+
+# the workers run at low priority: 10 steps nicer than this process (19 is the most there is)
+@FORK_WARNING
+def test_workers_run_at_low_priority(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root = tmp_path / "corpus"
+    write(root, {"a.txt": "x"})
+    monkeypatch.setitem(PARSERS, ".txt", lambda path: str(os.nice(0)))
+    mine = os.nice(0)
+    [doc] = docs_of(root, workers=1)
+    assert doc.raw_text == str(min(mine + 10, 19))
+    assert os.nice(0) == mine#this process keeps its priority
+
+
+# cheap files first and OCR last; each document goes into the cache as soon as it is read, so the cheap ones
+# are saved while the OCR still runs (the OCR reader of the test waits to see notes.txt in the cache)
+@FORK_WARNING
+def test_cheap_files_first_and_saved_before_the_ocr(tmp_path, db, logged, monkeypatch):
+    root = tmp_path / "corpus"
+    write(root, {"a.pdf": b"%PDF-1.4 fake", "b.png": b"fake png", "notes.txt": NOTES, "z.md": "# Title"})
+    path = tmp_path / "data" / "cache.db"
+    notes = ScannedFile(root_id="root_0", abs_path=root / "notes.txt", rel_path=Path("notes.txt"), size=0, mtime=0.0,
+                        sha256=hashlib.sha256(NOTES.encode("utf-8")).hexdigest())
+    def ocr_reader(file, ocr):
+        for _ in range(100):#up to 5 seconds
+            if get_cached(open_cache(path), notes) is not None:
+                return "notes.txt was saved", True
+            time.sleep(0.05)
+        return "notes.txt was not saved", True
+    monkeypatch.setitem(OCR_PARSERS, ".pdf", ocr_reader)
+    monkeypatch.setitem(OCR_PARSERS, ".png", ocr_reader)
+    docs = docs_of(root, db=db, workers=1)
+    assert logged() == ["notes.txt", "z.md"]
+    assert [d.raw_text for d in docs if d.ext in (".pdf", ".png")] == ["notes.txt was saved"] * 2
+
+
+# without workers everything is read in this process, as before (the C2 tests count reads in a list)
+def test_without_workers_reads_in_this_process(tmp_path, reads):
+    root = tmp_path / "corpus"
+    write(root, {"notes.txt": NOTES})
+    docs_of(root)
+    assert reads == ["notes.txt"]

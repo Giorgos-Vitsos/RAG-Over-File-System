@@ -45,6 +45,13 @@ class OCRConfig:
     min_image_size: int=300
 
 @dataclass(frozen=True)
+class IngestConfig:
+    workers: int=2
+    def __post_init__(self):
+        if self.workers<1:
+            raise ValueError("IngestConfig have too little workers, workers must be 1+")
+        
+@dataclass(frozen=True)
 class ChunkingConfig:
     strategy: str = "content_aware"
     narrative_words: int = 400
@@ -82,11 +89,12 @@ class Config:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     ocr: OCRConfig= field(default_factory=OCRConfig)
+    ingest: IngestConfig=field(default_factory=IngestConfig)
 
 def load_config(path: str | Path)->Config:
     with open(path,encoding="utf-8") as f:
         data=yaml.safe_load(f) or {}
-    allowed=["seed","corpus","chunking","models","retrieval","llm","ocr"]
+    allowed=["seed","corpus","chunking","models","retrieval","llm","ocr","ingest"]
     for key in data:
         if key not in allowed:
             raise ValueError(f"unknown config section {key}")
@@ -103,5 +111,6 @@ def load_config(path: str | Path)->Config:
         models=ModelsConfig(**data.get("models",{})),
         retrieval=RetrievalConfig(**data.get("retrieval",{})),
         llm=LLMConfig(**data.get("llm",{})),
-        ocr=OCRConfig(**data.get("ocr",{}))
+        ocr=OCRConfig(**data.get("ocr",{})),
+        ingest=IngestConfig(**data.get("ingest",{}))
     )

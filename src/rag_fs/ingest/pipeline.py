@@ -5,16 +5,24 @@ from rag_fs.config import CorpusConfig, OCRConfig
 from rag_fs.ingest.archives import Budget,unpack
 from rag_fs.ingest.file_scanner import ScannedFile, scan
 from rag_fs.ingest.filetypes import MB,is_archive
-from rag_fs.ingest.parsers import make_doc, parse_file
+from rag_fs.ingest.parsers import make_doc, parse_file,OCR_PARSERS
 from rag_fs.ingest.parsers.ocr import check_ocr
 from rag_fs.models import Document
 import sqlite3
 from rag_fs.ingest.cache import get_cached,put_cached
+import os
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor,as_completed
 
-def read_corpus(corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None)->list[Document]:
+START_METHOD="forkserver"
+
+def read_corpus(corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None)->list[Document]:
     check_ocr(ocr)
     files=scan(corpus).files
+    docs_dict={}
     skip=set()
+    if workers is not None:
+        docs_dict=parse_in_workers(files,ocr,db,workers)#we run parallel
     for file in files:#first normal files then archives
         if not is_archive(file.rel_path):
             skip.add(file.sha256)
@@ -24,7 +32,11 @@ def read_corpus(corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connect
             if file.sha256 in skip:#the same item
                 continue
             skip.add(file.sha256)
-        docs.extend(read_file(file,corpus,skip,ocr,db=db))
+        key=(file.sha256,file.rel_path.suffix.lower())
+        if key in docs_dict:#if found via parallel
+            docs.append(replace(docs_dict[key],file_path=file.rel_path,root_id=file.root_id,last_modified=file.mtime))
+        else:
+            docs.extend(read_file(file,corpus,skip,ocr,db=db))
     return docs
 
 def read_file(file:ScannedFile,corpus:CorpusConfig,skip:set[str],ocr:OCRConfig=OCRConfig(),depth:int=1,budget:Budget|None=None,db:sqlite3.Connection|None=None)->list[Document]:
@@ -62,3 +74,31 @@ def parse_cached(file:ScannedFile,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connectio
     doc=parse_file(file,ocr)
     put_cached(db,doc)
     return doc
+
+def start_new_process():
+    os.nice(10)
+
+def parse_in_workers(files:list[ScannedFile],ocr:OCRConfig,db:sqlite3.Connection|None,workers:int)->dict[tuple[str,str],Document]:
+    todo={}
+    for file in  files:
+        if is_archive(file.rel_path):
+            continue
+        key=(file.sha256,file.rel_path.suffix.lower())
+        if  key in todo:#already marked for processing
+            continue
+        if db is not None and get_cached(db,file) is not None:#we have cache
+            continue
+        todo[key]=file
+    order=sorted(todo.items(),key=lambda item: item[0][1] in OCR_PARSERS)#ocr goes last
+    parsed={}
+    with ProcessPoolExecutor(max_workers=workers,mp_context=multiprocessing.get_context(START_METHOD),initializer=start_new_process) as pool:
+        futures={}
+        for key,file in order:
+            future=pool.submit(parse_file,file,ocr)
+            futures[future]=key
+        for future in as_completed(futures):
+            doc=future.result()
+            if db is not None:#we cache them
+                put_cached(db,doc)
+            parsed[futures[future]]=doc
+    return parsed
