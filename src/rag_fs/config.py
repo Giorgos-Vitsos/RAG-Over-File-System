@@ -47,6 +47,8 @@ class OCRConfig:
 @dataclass(frozen=True)
 class IngestConfig:
     workers: int=2
+    cache: str="data/cache.db"
+    documents: str="data/documents.jsonl"
     def __post_init__(self):
         if self.workers<1:
             raise ValueError("IngestConfig have too little workers, workers must be 1+")

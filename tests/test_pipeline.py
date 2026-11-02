@@ -13,7 +13,13 @@ from rag_fs.ingest.cache import drop_cached, get_cached, open_cache
 from rag_fs.ingest.file_scanner import ScannedFile
 from rag_fs.ingest.parsers import OCR_PARSERS, PARSERS
 from rag_fs.ingest.parsers.text import read_text
-from rag_fs.ingest.pipeline import read_corpus
+from rag_fs.ingest.file_scanner import scan
+from rag_fs.ingest.pipeline import read_files
+
+
+# the whole corpus: what the scanner finds, read
+def read_all(corpus, ocr=OCRConfig(), **settings):
+    return read_files(scan(corpus).files, corpus, ocr, **settings)
 
 NOTES = "Σημειώσεις του μαθήματος για την εξέταση."
 CODE = "def main():\n    print('γεια')\n"
@@ -34,50 +40,50 @@ def read(tmp_path, files, **settings):
         f = root / name
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(data.encode("utf-8") if isinstance(data, str) else data)
-    docs = read_corpus(CorpusConfig(roots=[root], **settings))
+    docs = read_all(CorpusConfig(roots=[root], **settings))
     return [(str(d.file_path), d.parse_status, d.raw_text) for d in docs]
 
 
 # every file of the corpus gives a document, and an archive gives the documents of the files inside it
-def test_read_corpus_files_and_archives(tmp_path):
+def test_read_files_files_and_archives(tmp_path):
     files = {"notes.txt": NOTES, "src/main.py": CODE, "work.zip": zip_bytes({"a/notes.txt": "Άλλες σημειώσεις."})}
     assert sorted(read(tmp_path, files)) == [
         ("notes.txt", "ok", NOTES), ("src/main.py", "ok", CODE), ("work.zip/a/notes.txt", "ok", "Άλλες σημειώσεις.")]
 
 
 # a file inside an archive that is also outside is read once, from outside, even when the archive comes first
-def test_read_corpus_copy_outside_wins(tmp_path):
+def test_read_files_copy_outside_wins(tmp_path):
     files = {"a.zip": zip_bytes({"notes.txt": NOTES, "main.py": CODE}), "z.txt": NOTES}
     assert read(tmp_path, files) == [("a.zip/main.py", "ok", CODE), ("z.txt", "ok", NOTES)]
 
 
 # the same archive twice is read once
-def test_read_corpus_same_archive_twice(tmp_path):
+def test_read_files_same_archive_twice(tmp_path):
     data = zip_bytes({"notes.txt": NOTES})
     assert read(tmp_path, {"a.zip": data, "b/copy.zip": data}) == [("a.zip/notes.txt", "ok", NOTES)]
 
 
 # an archive deeper than the limit, counted from the archive of the corpus, is failed
-def test_read_corpus_depth_of_archives(tmp_path):
+def test_read_files_depth_of_archives(tmp_path):
     files = {"work.zip": zip_bytes({"notes.txt": NOTES}), "main.py": CODE}
     assert read(tmp_path, files, max_archive_depth=0) == [("main.py", "ok", CODE), ("work.zip", "failed", "")]
 
 
 # the OCR settings are checked before anything is read
-def test_read_corpus_checks_ocr(tmp_path):
+def test_read_files_checks_ocr(tmp_path):
     root = tmp_path / "corpus"
     root.mkdir()
     (root / "notes.txt").write_text(NOTES, encoding="utf-8")
     with pytest.raises(ValueError):
-        read_corpus(CorpusConfig(roots=[root]), OCRConfig(languages=[]))
+        read_all(CorpusConfig(roots=[root]), OCRConfig(languages=[]))
 
 
 # the same broken archive twice is reported once
-def test_read_corpus_same_broken_archive_twice(tmp_path):
+def test_read_files_same_broken_archive_twice(tmp_path):
     assert read(tmp_path, {"a.zip": NOTES, "b.zip": NOTES}) == [("a.zip", "failed", "")]
 
 
-# piece C2: read_corpus with the cache (D95)
+# piece C2: read_files with the cache (D95)
 # the readers of .txt and .md count the files they really read
 @pytest.fixture
 def reads(monkeypatch):
@@ -99,7 +105,7 @@ def write(root, files):
 
 # one run over the corpus with the cache: (path, status, text) of every document
 def run(root, db):
-    return [(str(d.file_path), d.parse_status, d.raw_text) for d in read_corpus(CorpusConfig(roots=[root]), db=db)]
+    return [(str(d.file_path), d.parse_status, d.raw_text) for d in read_all(CorpusConfig(roots=[root]), db=db)]
 
 
 @pytest.fixture
@@ -122,9 +128,9 @@ def test_second_run_reads_nothing(tmp_path, db, reads):
 def test_cached_documents_are_the_same(tmp_path, db):
     root = tmp_path / "corpus"
     write(root, {"notes.txt": NOTES, "work.zip": zip_bytes({"a/in.txt": "Μέσα."})})
-    plain = read_corpus(CorpusConfig(roots=[root]))
-    read_corpus(CorpusConfig(roots=[root]), db=db)
-    assert read_corpus(CorpusConfig(roots=[root]), db=db) == plain
+    plain = read_all(CorpusConfig(roots=[root]))
+    read_all(CorpusConfig(roots=[root]), db=db)
+    assert read_all(CorpusConfig(roots=[root]), db=db) == plain
 
 
 # a file that changed is read again, the others not
@@ -210,12 +216,12 @@ def test_cache_survives_between_runs(tmp_path, reads):
     assert reads == []
 
 
-# without a cache read_corpus reads everything, as before
+# without a cache read_files reads everything, as before
 def test_without_cache_everything_is_read(tmp_path, reads):
     root = tmp_path / "corpus"
     write(root, {"notes.txt": NOTES})
-    read_corpus(CorpusConfig(roots=[root]))
-    read_corpus(CorpusConfig(roots=[root]))
+    read_all(CorpusConfig(roots=[root]))
+    read_all(CorpusConfig(roots=[root]))
     assert reads == ["notes.txt", "notes.txt"]
 
 
@@ -256,7 +262,7 @@ MIXED = {
 
 
 def docs_of(root, **settings):
-    return read_corpus(CorpusConfig(roots=[root]), **settings)
+    return read_all(CorpusConfig(roots=[root]), **settings)
 
 
 # with workers (started the normal way, with the real readers) the documents are the same, in the same order
@@ -311,7 +317,7 @@ def test_workers_copy_in_another_root(tmp_path, logged):
     write(first, {"notes.txt": NOTES})
     write(second, {"b/copy.txt": NOTES})
     os.utime(second / "b" / "copy.txt", (1_000_000, 1_000_000))
-    docs = read_corpus(CorpusConfig(roots=[first, second]), workers=2)
+    docs = read_all(CorpusConfig(roots=[first, second]), workers=2)
     assert [(str(d.file_path), d.root_id, d.last_modified) for d in docs] == [
         ("notes.txt", "root_0", (first / "notes.txt").stat().st_mtime), ("b/copy.txt", "root_1", 1_000_000)]
     assert logged() == ["notes.txt"]
@@ -445,3 +451,28 @@ def test_inside_archives_cheap_files_first_and_saved_before_the_ocr(tmp_path, db
     monkeypatch.setitem(OCR_PARSERS, ".pdf", ocr_reader)
     docs = docs_of(root, db=db, workers=1)
     assert [(str(d.file_path), d.raw_text) for d in docs] == [("work.zip/a.pdf", "notes.txt was saved"), ("work.zip/notes.txt", NOTES)]
+
+
+# piece C4: progress while the workers read (D95)
+
+
+# after each file a worker reads: (done, total)
+@FORK_WARNING
+def test_progress_of_the_workers(tmp_path, db, logged):
+    root = tmp_path / "corpus"
+    write(root, {"a.txt": "a", "b.txt": "b", "c.md": "# c", "copy/a.txt": "a"})
+    calls = []
+    docs_of(root, db=db, workers=2, progress=lambda done, total: calls.append((done, total)))
+    assert calls == [(1, 3), (2, 3), (3, 3)]#the copy is read once
+    calls.clear()
+    docs_of(root, db=db, workers=2, progress=lambda done, total: calls.append((done, total)))
+    assert calls == []#nothing to read the second time
+
+
+# without workers there is nothing to count
+def test_no_progress_without_workers(tmp_path):
+    root = tmp_path / "corpus"
+    write(root, {"a.txt": "a"})
+    calls = []
+    docs_of(root, progress=lambda done, total: calls.append((done, total)))
+    assert calls == []

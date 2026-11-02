@@ -135,3 +135,12 @@ def test_ingest_workers_from_yaml(tmp_path):
 def test_ingest_workers_must_be_positive(workers):
     with pytest.raises(ValueError):
         IngestConfig(workers=workers)
+
+
+# where the ingest keeps the cache and the documents: data/ by default (it is in .gitignore), or from the yaml
+def test_ingest_paths(tmp_path):
+    assert (IngestConfig().cache, IngestConfig().documents) == ("data/cache.db", "data/documents.jsonl")
+    yaml_file = tmp_path / "exp.yaml"
+    yaml_file.write_text("ingest:\n  cache: other/c.db\n  documents: other/d.jsonl\n")
+    ingest = load_config(yaml_file).ingest
+    assert (ingest.cache, ingest.documents, ingest.workers) == ("other/c.db", "other/d.jsonl", 2)

@@ -2,6 +2,7 @@ import multiprocessing
 import os
 import sqlite3
 import tempfile
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor,as_completed
 from dataclasses import dataclass,field,replace
 from pathlib import Path
@@ -23,11 +24,11 @@ class ReadState:
     db:sqlite3.Connection|None=None#cache
     workers:int|None=None#count of processes
     skip:set[str]=field(default_factory=set)
+    progress:Callable[[int,int],None]|None=None
 
-def read_corpus(corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None)->list[Document]:
+def read_files(files:list[ScannedFile],corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None,progress:Callable[[int,int],None]|None=None)->list[Document]:
     check_ocr(ocr)
-    files=scan(corpus).files
-    state=ReadState(corpus,ocr,db,workers)
+    state=ReadState(corpus,ocr,db,workers,progress=progress)
     for file in files:
         if not is_archive(file.rel_path):
             state.skip.add(file.sha256)#if we see this file again we will skip it
@@ -112,6 +113,8 @@ def parse_in_workers(files:list[ScannedFile],state:ReadState)->dict[tuple[str,st
             if state.db is not None:#we cache them
                 put_cached(state.db,doc)
             parsed[futures[future]]=doc
+            if state.progress is not None:
+                state.progress(len(parsed),len(order))
     return parsed
 
 def start_new_process():
