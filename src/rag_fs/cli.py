@@ -6,7 +6,8 @@ from rag_fs.config import CorpusConfig,load_config
 from rag_fs.ingest.cache import drop_cached,open_cache,load_manifest,save_manifest
 from rag_fs.ingest.file_scanner import ScannerResult,scan
 from rag_fs.ingest.pipeline import read_files
-from rag_fs.models import Document,save_jsonl
+from rag_fs.models import Document,save_jsonl,load_jsonl
+from rag_fs.ingest.quality import quality_reasons
 
 STATUSES=["ok","ocr","empty","failed","unsupported"]
 
@@ -19,11 +20,59 @@ def main(argv:list[str]|None=None):
     ingest_cmd=commands.add_parser("ingest",help="read the corpus into documents")
     ingest_cmd.add_argument("config",type=Path)
     ingest_cmd.add_argument("--rebuild",nargs="*",metavar="EXT",help="read these extensions again, or everything without any")
+    show_cmd=commands.add_parser("show",help="show the parsed text")
+    show_cmd.add_argument("config",type=Path)
+    show_cmd.add_argument("file",nargs="?",default=None)
+    show_cmd.add_argument("--status",choices=STATUSES)
+    show_cmd.add_argument("--quality",action="store_true",default=False)
     args=parser.parse_args(argv)
     if args.command=="scan":
         run_scan(args)
     elif args.command=="ingest":
         run_ingest(args,parser)
+    elif args.command=="show":
+        run_show(args,parser)
+
+def run_show(args:argparse.Namespace,parser:argparse.ArgumentParser)->None:
+    config=load_config(args.config)
+    if sum([args.file is not None,args.status is not None,args.quality])!=1:
+        parser.error("Wrong number of arguments give one of: a file, --status, --quality")
+    out=Path(config.ingest.documents)
+    if not out.is_file():
+        parser.error("No parsed text, run ingestion first")
+    docs=load_jsonl(Document,out)
+    if args.status is not None:
+        paths=[]
+        for doc in docs:
+            if doc.parse_status==args.status:
+                paths.append(str(doc.file_path))
+        for path in sorted(paths):#all with the status asked
+            print(path)
+    elif args.quality:
+        for doc in sorted(docs,key=lambda d: str(d.file_path)):
+            reasons=quality_reasons(doc)
+            if reasons:
+                print(f"{doc.file_path}: {', '.join(reasons)}")
+    else:
+        found=[]
+        for doc in docs:
+            if str(doc.file_path)==args.file or doc.file_path.name==args.file:
+                found.append(doc)
+        if not found:
+            parser.error(f"No {args.file} was found in the parsed files")
+        for doc in found:
+            print_doc(doc)
+
+def print_doc(doc:Document)->None:
+    text=doc.raw_text
+    print(f"{doc.file_path}    ({doc.root_id})")
+    print()
+    print(f"status:{doc.parse_status}    type:{doc.content_type}    len:{len(text)}")
+    reasons=quality_reasons(doc)
+    if reasons:
+        print(f"quality:{', '.join(reasons)}")
+    print()
+    print(text)
 
 def run_scan(args:argparse.Namespace)->None:
     roots=[]

@@ -209,3 +209,102 @@ def test_ingest_new_and_removed_files(tmp_path, logged, hashed):
     assert hashed == ["new.txt"]
     docs = [str(d.file_path) for d in load_jsonl(Document, data.parent / "docs" / "documents.jsonl")]
     assert docs == ["new.txt", "notes.txt"]
+
+
+# the show command: what the ingest made of a file, and lists by status and by quality (D97)
+BAD = chr(0xFFFD)
+SHOW_CORPUS = {
+    "notes.txt": NOTES, "a/b.md": "# Title\n\nText.", "c/b.md": "# Other", "empty.txt": "", "broken.zip": "not a zip",
+    "work.zip": zip_bytes({"in/inside.txt": "Μέσα."}), "bad.txt": "Λέξεις " + BAD + " με χαλασμένο χαρακτήρα.",
+}
+
+
+# a corpus that has been ingested; the show command on it: (stdout, stderr)
+@pytest.fixture
+def shown(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root, data, yaml_file = setup(tmp_path, SHOW_CORPUS)
+    ingest(yaml_file)
+    capsys.readouterr()
+    def show(*more):
+        from rag_fs.cli import main
+        main(["show", str(yaml_file), *more])
+        return capsys.readouterr().out
+    return show
+
+
+# a file: its path and root, an empty line, status, type and length, then its text as the chunker will get it
+# (the format is Giorgos's)
+@FORK_WARNING
+def test_show_a_file(shown):
+    out = shown("notes.txt")
+    lines = out.splitlines()
+    assert lines[:3] == ["notes.txt    (root_0)", "", f"status:ok    type:prose    len:{len(NOTES)}"]
+    assert out.rstrip("\n").endswith("\n\n" + NOTES)
+
+
+# by its path, by its name only, or inside an archive
+@FORK_WARNING
+@pytest.mark.parametrize("asked, path", [("a/b.md", "a/b.md"), ("work.zip/in/inside.txt", "work.zip/in/inside.txt"),
+                                         ("inside.txt", "work.zip/in/inside.txt")], ids=["path", "inside an archive", "name inside an archive"])
+def test_show_finds_the_file(shown, asked, path):
+    assert shown(asked).splitlines()[0] == f"{path}    (root_0)"
+
+
+# a name that two files have: both are shown
+@FORK_WARNING
+def test_show_same_name_twice(shown):
+    headers = [line for line in shown("b.md").splitlines() if line.endswith("    (root_0)")]
+    assert headers == ["a/b.md    (root_0)", "c/b.md    (root_0)"]
+
+
+# the quality reasons of the file are in the header, when it has some
+@FORK_WARNING
+def test_show_quality_in_the_header(shown):
+    assert "quality:replacement_chars" in shown("bad.txt").splitlines()
+    assert not any(line.startswith("quality:") for line in shown("notes.txt").splitlines())
+
+
+# a file that is not in the documents: a message and an error code
+@FORK_WARNING
+def test_show_unknown_file(shown, capsys):
+    with pytest.raises(SystemExit) as stop:
+        shown("nothing.txt")
+    assert stop.value.code != 0
+    assert "nothing.txt" in capsys.readouterr().err
+
+
+# --status: the paths of the documents with that status, one per line
+@FORK_WARNING
+@pytest.mark.parametrize("status, paths", [("failed", ["broken.zip"]), ("empty", ["empty.txt"]),
+                                           ("ok", ["a/b.md", "bad.txt", "c/b.md", "notes.txt", "work.zip/in/inside.txt"]), ("ocr", [])])
+def test_show_status(shown, status, paths):
+    assert shown("--status", status).splitlines() == paths
+
+
+# --quality: the documents with quality reasons, and the reasons
+@FORK_WARNING
+def test_show_quality(shown):
+    assert shown("--quality").splitlines() == ["bad.txt: replacement_chars"]
+
+
+# exactly one of: a file, --status, --quality
+@FORK_WARNING
+@pytest.mark.parametrize("more", [[], ["notes.txt", "--quality"], ["--status", "ok", "--quality"], ["notes.txt", "--status", "ok"],
+                                  ["--status", "nothing"]], ids=["none", "file and quality", "status and quality", "file and status", "unknown status"])
+def test_show_needs_one_question(shown, capsys, more):
+    with pytest.raises(SystemExit) as stop:
+        shown(*more)
+    assert stop.value.code != 0
+    assert "invalid choice: 'show'" not in capsys.readouterr().err#the command exists, the question is wrong
+
+
+# before any ingest there are no documents to show: a message, not a crash
+def test_show_before_ingest(tmp_path, capsys):
+    from rag_fs.cli import main
+    root, data, yaml_file = setup(tmp_path, {"notes.txt": NOTES})
+    with pytest.raises(SystemExit) as stop:
+        main(["show", str(yaml_file), "notes.txt"])
+    assert stop.value.code != 0
+    err = capsys.readouterr().err
+    assert "invalid choice: 'show'" not in err and "ingest" in err#it says to run the ingest first
