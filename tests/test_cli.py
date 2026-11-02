@@ -7,7 +7,6 @@ from rag_fs.config import CorpusConfig
 from rag_fs.models import Document, load_jsonl
 from test_pipeline import CODE, NOTES, logged, read_all, write, zip_bytes  # noqa: F401 (logged is a fixture)
 
-CLI = pytest.mark.xfail(strict=True, reason="cache piece 4: the ingest command")
 FORK_WARNING = pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
 
 CORPUS = {
@@ -35,7 +34,6 @@ def ingest(yaml_file, *more):
 
 
 # the documents of the corpus are saved as JSONL where the yaml says, the same as read_files gives
-@CLI
 @FORK_WARNING
 def test_ingest_saves_the_documents(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "START_METHOD", "fork")
@@ -45,7 +43,6 @@ def test_ingest_saves_the_documents(tmp_path, monkeypatch):
 
 
 # the cache is where the yaml says, and has what was read
-@CLI
 @FORK_WARNING
 def test_ingest_keeps_the_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "START_METHOD", "fork")
@@ -57,7 +54,6 @@ def test_ingest_keeps_the_cache(tmp_path, monkeypatch):
 
 
 # the second ingest reads nothing
-@CLI
 @FORK_WARNING
 def test_ingest_twice_reads_once(tmp_path, logged):
     root, data, yaml_file = setup(tmp_path)
@@ -69,7 +65,6 @@ def test_ingest_twice_reads_once(tmp_path, logged):
 
 
 # --rebuild with extensions reads those again, written in any way: .txt, txt, TXT
-@CLI
 @FORK_WARNING
 @pytest.mark.parametrize("ext", [".txt", "txt", "TXT", ".Txt"])
 def test_ingest_rebuild_some_extensions(tmp_path, logged, ext):
@@ -81,7 +76,6 @@ def test_ingest_rebuild_some_extensions(tmp_path, logged, ext):
 
 
 # --rebuild with two extensions, and --rebuild alone reads everything again
-@CLI
 @FORK_WARNING
 @pytest.mark.parametrize("more, again", [(["--rebuild", "txt", ".md"], ["b.md", "empty.txt", "inside.txt", "notes.txt"]),
                                          (["--rebuild"], ["b.md", "empty.txt", "inside.txt", "notes.txt"])],
@@ -95,7 +89,6 @@ def test_ingest_rebuild(tmp_path, logged, more, again):
 
 
 # the summary: documents by status, by extension, and what the scanner ignored and why (only numbers)
-@CLI
 @FORK_WARNING
 def test_ingest_summary(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pipeline, "START_METHOD", "fork")
@@ -110,18 +103,18 @@ def test_ingest_summary(tmp_path, monkeypatch, capsys):
 
 
 # the summary has no names of files: it is safe to share
-@CLI
 @FORK_WARNING
 def test_ingest_summary_has_no_file_names(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pipeline, "START_METHOD", "fork")
-    root, data, yaml_file = setup(tmp_path, {"secret-plans.txt": NOTES, "private.zip": "not a zip"})
+    root, data, yaml_file = setup(tmp_path, {"secret-plans.txt": NOTES, "private.zip": "not a zip",
+                                             "hidden-photos/Thumbs.db": b"\x00", "hidden-git/.git/config": "x"})
     ingest(yaml_file)
     out = capsys.readouterr().out
-    assert "secret" not in out and "private" not in out and str(root) not in out
+    assert "secret" not in out and "private" not in out and "hidden" not in out and str(root) not in out
+    assert "Ignored 2" in out.splitlines()#the ignored files are counted, not named
 
 
 # while it reads, it shows how many files of how many are done (on stderr, so the summary stays clean)
-@CLI
 @FORK_WARNING
 def test_ingest_shows_progress(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(pipeline, "START_METHOD", "fork")
@@ -132,7 +125,6 @@ def test_ingest_shows_progress(tmp_path, monkeypatch, capsys):
 
 
 # the folders of the outputs are made if they are missing
-@CLI
 @FORK_WARNING
 def test_ingest_makes_the_folders(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "START_METHOD", "fork")
@@ -143,7 +135,6 @@ def test_ingest_makes_the_folders(tmp_path, monkeypatch):
 
 
 # a yaml without roots has nothing to read: it stops with a message instead of reading nothing
-@CLI
 def test_ingest_without_roots(tmp_path):
     yaml_file = tmp_path / "exp.yaml"
     yaml_file.write_text("seed: 1\n", encoding="utf-8")
@@ -153,7 +144,6 @@ def test_ingest_without_roots(tmp_path):
 
 
 # the scanner report is still there, as "scan"
-@CLI
 def test_scan_command(tmp_path, capsys):
     from rag_fs.cli import main
     root = tmp_path / "corpus"
@@ -164,7 +154,6 @@ def test_scan_command(tmp_path, capsys):
 
 
 # a command that does not exist, or no command, stops with the usage
-@CLI
 @pytest.mark.parametrize("argv", [["nothing"], []], ids=["unknown", "none"])
 def test_cli_without_a_known_command(argv):
     from rag_fs.cli import main
