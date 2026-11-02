@@ -32,22 +32,22 @@ def read_corpus(corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connect
             if file.sha256 in skip:#the same item
                 continue
             skip.add(file.sha256)
-        key=(file.sha256,file.rel_path.suffix.lower())
-        if key in docs_dict:#if found via parallel
-            docs.append(replace(docs_dict[key],file_path=file.rel_path,root_id=file.root_id,last_modified=file.mtime))
+        processed=replace_processed(file,docs_dict)
+        if processed is not None:#if found via parallel
+            docs.append(processed)
         else:
-            docs.extend(read_file(file,corpus,skip,ocr,db=db))
+            docs.extend(read_file(file,corpus,skip,ocr,db=db,workers=workers))
     return docs
 
-def read_file(file:ScannedFile,corpus:CorpusConfig,skip:set[str],ocr:OCRConfig=OCRConfig(),depth:int=1,budget:Budget|None=None,db:sqlite3.Connection|None=None)->list[Document]:
+def read_file(file:ScannedFile,corpus:CorpusConfig,skip:set[str],ocr:OCRConfig=OCRConfig(),depth:int=1,budget:Budget|None=None,db:sqlite3.Connection|None=None,workers:int|None=None)->list[Document]:
     ext=file.rel_path.suffix.lower()
     if not is_archive(file.rel_path):#normal file
         return [parse_cached(file,ocr,db)]
     if depth>corpus.max_archive_depth:#too deep
         return [make_doc(ext,"","binary","failed",file)]
-    return read_archive(file,corpus,skip,ocr,depth,budget,db=db)
+    return read_archive(file,corpus,skip,ocr,depth,budget,db=db,workers=workers)
 
-def read_archive(scanned:ScannedFile,corpus:CorpusConfig,skip:set[str],ocr:OCRConfig=OCRConfig(),depth:int=1,budget:Budget|None=None,db:sqlite3.Connection|None=None)->list[Document]:
+def read_archive(scanned:ScannedFile,corpus:CorpusConfig,skip:set[str],ocr:OCRConfig=OCRConfig(),depth:int=1,budget:Budget|None=None,db:sqlite3.Connection|None=None,workers:int|None=None)->list[Document]:
     if budget is None:
         budget=Budget(corpus.max_archive_size_mb*MB)
     docs=[]
@@ -55,11 +55,23 @@ def read_archive(scanned:ScannedFile,corpus:CorpusConfig,skip:set[str],ocr:OCRCo
         whole=unpack(scanned.abs_path,Path(tmp),corpus.max_file_size_mb*MB,budget)
         config=replace(corpus, roots=[Path(tmp)])
         result=scan(config)#we scan the temp as corpus
+        docs_dict={}
+        if workers is not None:
+            new_files=[]
+            for file in result.files:
+                if file.sha256 not in skip:
+                    new_files.append(file)
+            docs_dict=parse_in_workers(new_files,ocr,db,workers)
         for file in result.files:
             if file.sha256 in skip:#file already exists in corpus
                 continue
             skip.add(file.sha256)
-            for doc in read_file(file,config,skip,ocr,depth+1,budget,db=db):
+            processed=replace_processed(file,docs_dict)
+            if processed is not None:
+                found=[processed]
+            else:
+                found=read_file(file,config,skip,ocr,depth+1,budget,db=db,workers=workers)
+            for doc in found:
                 docs.append(replace(doc,file_path=scanned.rel_path/doc.file_path,root_id=scanned.root_id))
     if not whole:
         docs.append(make_doc(scanned.rel_path.suffix.lower(),"","binary","failed",scanned))
@@ -102,3 +114,9 @@ def parse_in_workers(files:list[ScannedFile],ocr:OCRConfig,db:sqlite3.Connection
                 put_cached(db,doc)
             parsed[futures[future]]=doc
     return parsed
+
+def replace_processed(file:ScannedFile,docs_dict:dict[tuple[str,str],Document])->Document|None:
+    key=(file.sha256,file.rel_path.suffix.lower())
+    if key in docs_dict:
+        return replace(docs_dict[key],file_path=file.rel_path,root_id=file.root_id,last_modified=file.mtime)
+    return None

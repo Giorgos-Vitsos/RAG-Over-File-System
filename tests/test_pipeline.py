@@ -23,7 +23,7 @@ def zip_bytes(files):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as z:
         for name, text in files.items():
-            z.writestr(name, text.encode("utf-8"))
+            z.writestr(name, text if isinstance(text, bytes) else text.encode("utf-8"))
     return buffer.getvalue()
 
 
@@ -372,3 +372,76 @@ def test_without_workers_reads_in_this_process(tmp_path, reads):
     write(root, {"notes.txt": NOTES})
     docs_of(root)
     assert reads == ["notes.txt"]
+
+
+# piece C3b: the files inside archives are read by the workers too (D95)
+
+ARCHIVES = {
+    "notes.txt": NOTES,
+    "work.zip": zip_bytes({"a/notes.txt": NOTES, "a/other.md": "# Other", "a/main.py": CODE, "a/twice.txt": "Δύο φορές.",
+                           "b/twice.txt": "Δύο φορές.", "inner.zip": zip_bytes({"deep.txt": "Βαθιά.", "deep.md": "# Deep"})}),
+    "copy.zip": zip_bytes({"x.txt": "Από αντίγραφο."}), "broken.zip": "not a zip",
+}
+
+
+# the documents are the same with workers as without, with archives in archives, copies inside and outside, broken ones
+@pytest.mark.filterwarnings("error::DeprecationWarning")
+@pytest.mark.parametrize("with_cache", [False, True], ids=["no cache", "cache"])
+def test_workers_inside_archives_give_the_same_documents(tmp_path, with_cache):
+    root = tmp_path / "corpus"
+    write(root, ARCHIVES)
+    plain = docs_of(root)
+    db = open_cache(tmp_path / "data" / "cache.db") if with_cache else None
+    assert docs_of(root, db=db, workers=3) == plain
+
+
+# the files inside an archive are read in the workers: they run at low priority, this process does not
+@FORK_WARNING
+def test_files_inside_archives_are_read_in_the_workers(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root = tmp_path / "corpus"
+    write(root, {"work.zip": zip_bytes({"a.txt": "x", "inner.zip": zip_bytes({"b.txt": "y"})})})
+    monkeypatch.setitem(PARSERS, ".txt", lambda path: str(os.nice(0)))
+    mine = os.nice(0)
+    docs = docs_of(root, workers=1)
+    assert [(str(d.file_path), d.raw_text) for d in docs] == [
+        ("work.zip/a.txt", str(min(mine + 10, 19))), ("work.zip/inner.zip/b.txt", str(min(mine + 10, 19)))]
+
+
+# what is read once stays read once: a file inside that is also outside, and the same file twice inside
+@FORK_WARNING
+def test_workers_inside_archives_read_each_file_once(tmp_path, logged):
+    root = tmp_path / "corpus"
+    write(root, ARCHIVES)
+    docs_of(root, workers=3)
+    assert sorted(logged()) == ["deep.md", "deep.txt", "notes.txt", "other.md", "twice.txt", "x.txt"]
+
+
+# the second run with the cache reads nothing inside the archives either
+@FORK_WARNING
+def test_workers_inside_archives_use_the_cache(tmp_path, db, logged):
+    root = tmp_path / "corpus"
+    write(root, ARCHIVES)
+    first = docs_of(root, db=db, workers=2)
+    read_once = logged()
+    assert docs_of(root, db=db, workers=2) == first
+    assert logged() == read_once
+
+
+# inside an archive too: cheap files first, and each saved as soon as it is read, before the OCR ends
+@FORK_WARNING
+def test_inside_archives_cheap_files_first_and_saved_before_the_ocr(tmp_path, db, logged, monkeypatch):
+    root = tmp_path / "corpus"
+    write(root, {"work.zip": zip_bytes({"a.pdf": "%PDF-1.4 fake", "notes.txt": NOTES})})
+    path = tmp_path / "data" / "cache.db"
+    notes = ScannedFile(root_id="root_0", abs_path=Path("notes.txt"), rel_path=Path("notes.txt"), size=0, mtime=0.0,
+                        sha256=hashlib.sha256(NOTES.encode("utf-8")).hexdigest())
+    def ocr_reader(file, ocr):
+        for _ in range(100):#up to 5 seconds
+            if get_cached(open_cache(path), notes) is not None:
+                return "notes.txt was saved", True
+            time.sleep(0.05)
+        return "notes.txt was not saved", True
+    monkeypatch.setitem(OCR_PARSERS, ".pdf", ocr_reader)
+    docs = docs_of(root, db=db, workers=1)
+    assert [(str(d.file_path), d.raw_text) for d in docs] == [("work.zip/a.pdf", "notes.txt was saved"), ("work.zip/notes.txt", NOTES)]
