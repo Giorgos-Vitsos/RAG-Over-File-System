@@ -3,7 +3,7 @@ from collections import Counter
 import argparse
 import sys
 from rag_fs.config import CorpusConfig,load_config
-from rag_fs.ingest.cache import drop_cached,open_cache
+from rag_fs.ingest.cache import drop_cached,open_cache,load_manifest,save_manifest
 from rag_fs.ingest.file_scanner import ScannerResult,scan
 from rag_fs.ingest.pipeline import read_files
 from rag_fs.models import Document,save_jsonl
@@ -48,7 +48,8 @@ def run_ingest(args:argparse.Namespace,parser:argparse.ArgumentParser)->None:
             drop_cached(db,exts)
         else:#without extensions we rebuild everything
             drop_cached(db,None)
-    result=scan(config.corpus)
+    result=scan(config.corpus,load_manifest(db))
+    save_manifest(db,result.files)
     docs=read_files(result.files,config.corpus,config.ocr,db,config.ingest.workers,show_progress)
     print(file=sys.stderr)#ends the progress line
     out=Path(config.ingest.documents)

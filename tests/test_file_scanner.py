@@ -353,3 +353,71 @@ def test_to_relative_rejects_file_outside_root(tmp_path):
 
     with pytest.raises(ValueError):
         to_relative(outside, root)
+
+
+# piece C5: the manifest, sha256 again only for files that changed (D95, D37)
+FAKE_SHA = "f" * 64
+
+
+# a corpus with two files, and how many files scan really hashes
+@pytest.fixture
+def two_files(tmp_path, monkeypatch):
+    from rag_fs.ingest import file_scanner
+    root = tmp_path / "corpus"
+    root.mkdir()
+    (root / "a.txt").write_text("hello")
+    (root / "b.txt").write_text("other")
+    hashed = []
+    real = file_scanner.file_sha256
+    def counted(path):
+        hashed.append(Path(path).name)
+        return real(path)
+    monkeypatch.setattr(file_scanner, "file_sha256", counted)
+    return root, hashed
+
+
+def known_of(root, name, sha=FAKE_SHA, size=None, mtime=None):
+    info = (root / name).stat()
+    return {root / name: (info.st_size if size is None else size, info.st_mtime if mtime is None else mtime, sha)}
+
+
+# same size and date as the last time: the sha256 of the last time, and the file is not read
+def test_scan_uses_the_known_sha_of_an_unchanged_file(two_files):
+    root, hashed = two_files
+    result = scan(CorpusConfig(roots=[root]), known_of(root, "a.txt"))
+    assert {f.rel_path.name: f.sha256 for f in result.files}["a.txt"] == FAKE_SHA
+    assert hashed == ["b.txt"]
+
+
+# another size or another date: the file changed, so it is read again
+@pytest.mark.parametrize("change", ["size", "mtime"])
+def test_scan_hashes_a_changed_file(two_files, change):
+    root, hashed = two_files
+    known = known_of(root, "a.txt", size=999 if change == "size" else None, mtime=1.0 if change == "mtime" else None)
+    result = scan(CorpusConfig(roots=[root]), known)
+    assert {f.rel_path.name: f.sha256 for f in result.files}["a.txt"] == HELLO_SHA256
+    assert sorted(hashed) == ["a.txt", "b.txt"]
+
+
+# a file the manifest has under another path is read: the key is the whole path
+def test_scan_known_is_by_path(two_files):
+    root, hashed = two_files
+    info = (root / "a.txt").stat()
+    scan(CorpusConfig(roots=[root]), {root / "b.txt": (info.st_size, info.st_mtime, FAKE_SHA)})
+    assert sorted(hashed) == ["a.txt", "b.txt"]
+
+
+# without a manifest every file is read, as before
+def test_scan_without_known_hashes_everything(two_files):
+    root, hashed = two_files
+    scan(CorpusConfig(roots=[root]))
+    assert sorted(hashed) == ["a.txt", "b.txt"]
+
+
+# the manifest does not change what is ignored: a file too large is ignored even if it is known
+def test_scan_known_does_not_skip_the_limits(two_files):
+    root, hashed = two_files
+    (root / "big.txt").write_bytes(b"x" * 2_000_000)
+    result = scan(CorpusConfig(roots=[root], max_file_size_mb=1), known_of(root, "big.txt"))
+    assert "big.txt" not in [f.rel_path.name for f in result.files]
+    assert (root / "big.txt", "too_large") in result.ignored

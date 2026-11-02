@@ -178,3 +178,57 @@ def test_drop_cached_is_saved(tmp_path):
     put_cached(db, doc())
     drop_cached(db, [".txt"])
     assert get_cached(open_cache(path), same_bytes()) is None
+
+
+# piece C5: the manifest, path -> (size, date, sha256) of the last scan (D95)
+
+
+def scanned(path, size=5, mtime=100.5, sha=SHA):
+    return ScannedFile(root_id="root_0", abs_path=Path(path), rel_path=Path(Path(path).name), size=size, mtime=mtime, sha256=sha)
+
+
+# what is saved comes back, by the whole path
+def test_manifest_round_trip(tmp_path):
+    from rag_fs.ingest.cache import load_manifest, save_manifest
+    db = cache(tmp_path)
+    save_manifest(db, [scanned("/c/a.txt"), scanned("/c/Σημειώσεις/b.txt", size=7, mtime=1.25, sha=OTHER_SHA)])
+    assert load_manifest(db) == {Path("/c/a.txt"): (5, 100.5, SHA), Path("/c/Σημειώσεις/b.txt"): (7, 1.25, OTHER_SHA)}
+
+
+def test_manifest_empty(tmp_path):
+    from rag_fs.ingest.cache import load_manifest
+    assert load_manifest(cache(tmp_path)) == {}
+
+
+# a file saved again replaces what was there; the others stay
+def test_manifest_newest_wins(tmp_path):
+    from rag_fs.ingest.cache import load_manifest, save_manifest
+    db = cache(tmp_path)
+    save_manifest(db, [scanned("/c/a.txt"), scanned("/c/b.txt")])
+    save_manifest(db, [scanned("/c/a.txt", size=9, mtime=2.0, sha=OTHER_SHA)])
+    assert load_manifest(db) == {Path("/c/a.txt"): (9, 2.0, OTHER_SHA), Path("/c/b.txt"): (5, 100.5, SHA)}
+
+
+# the date keeps all its digits: a change of a fraction of a second is a change
+def test_manifest_keeps_the_exact_date(tmp_path):
+    from rag_fs.ingest.cache import load_manifest, save_manifest
+    db = cache(tmp_path)
+    save_manifest(db, [scanned("/c/a.txt", mtime=1730563200.123456789)])
+    assert load_manifest(db)[Path("/c/a.txt")][1] == 1730563200.123456789
+
+
+# it is saved for the next run, and for another program while this one runs
+def test_manifest_is_saved(tmp_path):
+    from rag_fs.ingest.cache import load_manifest, open_cache, save_manifest
+    path = tmp_path / "data" / "cache.db"
+    save_manifest(open_cache(path), [scanned("/c/a.txt")])
+    assert load_manifest(open_cache(path)) == {Path("/c/a.txt"): (5, 100.5, SHA)}
+
+
+# --rebuild drops texts, not the manifest: the files did not change, the parsers did
+def test_drop_cached_keeps_the_manifest(tmp_path):
+    from rag_fs.ingest.cache import drop_cached, load_manifest, save_manifest
+    db = cache(tmp_path)
+    save_manifest(db, [scanned("/c/a.txt")])
+    drop_cached(db, None)
+    assert load_manifest(db) == {Path("/c/a.txt"): (5, 100.5, SHA)}

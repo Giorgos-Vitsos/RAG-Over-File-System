@@ -21,7 +21,7 @@ class ScannerResult:
     ignored: list[tuple[Path,str]]=field(default_factory=list)
 
 
-def scan(corpus: CorpusConfig)->ScannerResult:
+def scan(corpus: CorpusConfig,known:dict[Path,tuple[int,float,str]]|None=None)->ScannerResult:
     result=ScannerResult()
     max_allowed_bytes=corpus.max_file_size_mb*(MB)
     max_allowed_archive_bytes=corpus.max_archive_size_mb*(MB)
@@ -68,7 +68,14 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                     if info.st_size > max_allowed:
                         result.ignored.append((path, "too_large"))
                         continue
-                    file_hash = file_sha256(path)#if this fails then is unreadable
+                    if known is not None and path in known:
+                        size,time,sha256=known[path]
+                        if size==info.st_size and time==info.st_mtime:#if we already have hash it we dont hash again
+                            file_hash=sha256
+                        else:
+                            file_hash = file_sha256(path)#it has changed
+                    else:
+                        file_hash = file_sha256(path)#if this fails then is unreadable
                 except OSError:
                     result.ignored.append((path, "unreadable"))
                     continue

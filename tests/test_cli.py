@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from rag_fs.ingest import pipeline
@@ -160,3 +162,50 @@ def test_cli_without_a_known_command(argv):
     with pytest.raises(SystemExit) as stop:
         main(argv)
     assert stop.value.code != 0
+
+
+# piece C5: the ingest hashes again only the files that changed (D95)
+
+
+@pytest.fixture
+def hashed(monkeypatch):
+    from rag_fs.ingest import file_scanner
+    names = []
+    real = file_scanner.file_sha256
+    def counted(path):
+        names.append(Path(path).name)
+        return real(path)
+    monkeypatch.setattr(file_scanner, "file_sha256", counted)
+    return names
+
+
+# the second ingest opens no file of the corpus; a file that changed is hashed and read again
+@FORK_WARNING
+def test_ingest_hashes_only_what_changed(tmp_path, logged, hashed):
+    root, data, yaml_file = setup(tmp_path, {"notes.txt": NOTES, "b.md": "# Title", "work.zip": zip_bytes({"in.txt": "Μέσα."})})
+    ingest(yaml_file)
+    hashed.clear()
+    reads = len(logged())
+    ingest(yaml_file)
+    assert [name for name in hashed if name != "in.txt"] == []#the files inside an archive are in a new temp folder every time
+    (root / "notes.txt").write_text("Άλλες σημειώσεις.", encoding="utf-8")
+    hashed.clear()
+    ingest(yaml_file)
+    assert [name for name in hashed if name != "in.txt"] == ["notes.txt"]
+    assert logged()[reads:] == ["notes.txt"]
+    docs = {str(d.file_path): d.raw_text for d in load_jsonl(Document, data.parent / "docs" / "documents.jsonl")}
+    assert docs["notes.txt"] == "Άλλες σημειώσεις."
+
+
+# a new file is hashed, and a file that is gone is not in the documents
+@FORK_WARNING
+def test_ingest_new_and_removed_files(tmp_path, logged, hashed):
+    root, data, yaml_file = setup(tmp_path, {"notes.txt": NOTES, "old.txt": "Παλιό."})
+    ingest(yaml_file)
+    (root / "old.txt").unlink()
+    (root / "new.txt").write_text("Νέο.", encoding="utf-8")
+    hashed.clear()
+    ingest(yaml_file)
+    assert hashed == ["new.txt"]
+    docs = [str(d.file_path) for d in load_jsonl(Document, data.parent / "docs" / "documents.jsonl")]
+    assert docs == ["new.txt", "notes.txt"]

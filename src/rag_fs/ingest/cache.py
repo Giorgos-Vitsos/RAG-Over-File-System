@@ -11,6 +11,7 @@ def open_cache(path:Path)->sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     db=sqlite3.connect(path)
     db.execute("CREATE TABLE IF NOT EXISTS texts (sha256 TEXT, ext TEXT, text BLOB, content_type TEXT, parse_status TEXT, PRIMARY KEY (sha256, ext))")
+    db.execute("CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER, mtime REAL, sha256 TEXT)")
     return db
 
 def put_cached(db:sqlite3.Connection,doc:Document)->None:
@@ -36,3 +37,16 @@ def drop_cached(db:sqlite3.Connection,exts: list[str]|None=None)->None:
         else:
             for ext in exts:
                 db.execute("DELETE FROM texts WHERE ext=?",(ext,))
+
+def save_manifest(db:sqlite3.Connection,files:list[ScannedFile])->None:
+    rows=[]
+    for file in files:
+        rows.append((str(file.abs_path),file.size,file.mtime,file.sha256))
+    with db:
+        db.executemany("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?)",rows)
+
+def load_manifest(db:sqlite3.Connection)->dict[Path,tuple[int,float,str]]:
+    known={}
+    for path,size,time,sha256 in db.execute("SELECT path, size, mtime, sha256 FROM files"):
+        known[Path(path)]=(size,time,sha256)
+    return known
