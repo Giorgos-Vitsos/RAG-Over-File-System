@@ -27,7 +27,7 @@ class State:
     font:int|None=None
     field: bool=False
     instruction: bool=False
-
+    
 def read_rtf(path: Path)->str:
     data=path.read_bytes()
     file_text=data.decode("latin-1")
@@ -42,6 +42,7 @@ def read_rtf(path: Path)->str:
     fonts={}
     font_def=None
     fields=[]
+    table={"in_table":False,"cell_lines":[],"cells":[],"rows":[],"header_rows":0,"row_header":False,"merge_flags":[],"merge_flag":""}#dic that holds every table relationship
     for match in RTF_TOKENS.finditer(file_text):
         command=match.group(1)
         number=match.group(2)
@@ -87,7 +88,7 @@ def read_rtf(path: Path)->str:
                 skip_chars-=1
                 continue
             if command=="par":#end of a paragraph
-                add_paragraph(parts,paragraphs)
+                add_paragraph(parts,paragraphs,table)
             elif command=="uc":
                 if number is not None:
                     curr_group.uc=int(number)
@@ -106,6 +107,8 @@ def read_rtf(path: Path)->str:
                 curr_group.font=int(number)
             elif command in COMMAND_CHARS:
                 parts.append(COMMAND_CHARS[command])
+            else:
+                table_command(command,parts,table)
         elif symbol=="*":
             curr_group.star=True
         elif symbol is not None:
@@ -117,7 +120,7 @@ def read_rtf(path: Path)->str:
                     fields[-1]["code"]+=SYMBOL_CHARS[symbol]
                 continue
             if symbol=="\n" or symbol=="\r":
-                add_paragraph(parts,paragraphs)
+                add_paragraph(parts,paragraphs,table)
             elif symbol in SYMBOL_CHARS:
                 parts.append(SYMBOL_CHARS[symbol])
         elif hex_byte is not None:
@@ -143,14 +146,20 @@ def read_rtf(path: Path)->str:
                         fields[-1]["code"]+=text
                 else:
                     parts.append(text)
-    add_paragraph(parts,paragraphs)#the last paragraph ends without "par"
+    add_paragraph(parts,paragraphs,table)#the last paragraph ends without "par"
+    end_table(paragraphs,table)
     return "\n\n".join(paragraphs) 
     
-def add_paragraph(parts:list[str],paragraphs:list[str])->None:
+def add_paragraph(parts:list[str],paragraphs:list[str],table:dict)->None:
     text=clean_lines("".join(parts))
-    if text:
-        paragraphs.append(text)
     parts.clear()
+    if table["in_table"]:
+        table["cell_lines"].append(text)
+    else:
+        end_table(paragraphs,table)#par outside table ends all above tables
+        if text:
+            paragraphs.append(text)
+    
 
 def decode(text:str,font:int|None,fonts:dict[int,str],code_page:str)->str:
     if font is not None and font in fonts:
@@ -167,3 +176,59 @@ def end_field(parts:list[str],current:dict)->None:#the result of a link gets its
     start=min(start,len(parts))#to be safe if parts where emptied before hand
     result="".join(parts[start:])
     parts[start:]=[with_address(result,field_address(current["code"]))]#we connect links with text
+
+def table_command(command:str,parts:list[str],table:dict)->None:
+    if command=="pard":#we leave the table
+        table["in_table"]=False
+    elif command=="intbl":#we enter the table
+        table["in_table"]=True
+    elif command=="cell":#end of a cell
+        end_cell(parts,table)
+    elif command=="row":
+        if parts:
+            end_cell(parts,table)
+        end_row(table)
+    elif command=="trowd":#in new line we have diffrent settings
+        table["merge_flags"]=[]
+        table["merge_flag"]=""
+        table["row_header"]=False
+    elif command=="trhdr":#header row
+        table["row_header"]=True
+    elif command=="clvmgf":#merged down
+        table["merge_flag"]="first"
+    elif command=="clvmrg":#merged up
+        table["merge_flag"]="continue"
+    elif command=="cellx":#end of the settings of a cell
+        table["merge_flags"].append(table["merge_flag"])
+        table["merge_flag"]=""
+
+def end_cell(parts:list[str],table:dict)->None:
+    table["cell_lines"].append(clean_lines("".join(parts)))#we add the current part to the current cell lines
+    parts.clear()
+    lines=[]
+    for line in table["cell_lines"]:
+        if line:
+            lines.append(line)
+    table["cells"].append("\n".join(lines))
+    table["cell_lines"]=[]
+
+def end_row(table:dict)->None:
+    cells=table["cells"]
+    rows=table["rows"]
+    for index,flag in enumerate(table["merge_flags"]):
+        if flag=="continue" and rows and index<len(cells) and index<len(rows[-1]):#merge
+            cells[index]=rows[-1][index]#the cell is the one above
+    if table["row_header"] and table["header_rows"]==len(rows):#row is header if we are still in header region
+        table["header_rows"]+=1
+    rows.append(cells)
+    table["cells"]=[]#a new list, the old one is now a row
+
+def end_table(paragraphs:list[str],table:dict)->None:
+    if table["cells"]:#forgotten cells become a row
+        end_row(table)
+    if table["rows"]:
+        text=format_rows(table["rows"],table["header_rows"])
+        if text:
+            paragraphs.append(text)
+    table["rows"]=[]#clean up for next table
+    table["header_rows"]=0

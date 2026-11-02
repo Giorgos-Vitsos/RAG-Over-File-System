@@ -20,7 +20,6 @@ def read(tmp_path, text, encoding="ascii"):
 
 
 # the reader is written in four pieces; what a piece adds is xfail until that piece is written
-TABLES = pytest.mark.xfail(strict=True, reason="rtf piece 3: tables")
 HEADINGS = pytest.mark.xfail(strict=True, reason="rtf piece 4: headings")
 
 
@@ -125,11 +124,17 @@ TABLE_CASES = {
     "two tables": (row("A", "B") + row("1", "2") + r"\pard Between\par " + row("C", "D") + row("3", "4"),
                    "A: 1; B: 2\n\nBetween\n\nC: 3; D: 4"),
     "empty cells": (row("A", "B", "C") + row("1", "", "3"), "A: 1; C: 3\nB"),
+    "a header row only at the top": (
+        row("Name", "Grade") + row("Maria", "9") + r"\trowd\trhdr\cellx2000\cellx4000\pard\intbl Total\cell 9\cell\row ",
+        "Name: Maria; Grade: 9\nName: Total; Grade: 9"),
+    "text before row without a last cell": (r"\trowd\cellx2000\cellx4000\pard\intbl Name\cell Grade\row "
+                                             r"\trowd\cellx2000\cellx4000\pard\intbl Maria\cell 9\row ", "Name: Maria; Grade: 9"),
+    "merged with the one above in the first row": (row("", "Name", defs=[r"\clvmrg", ""]) + row("1", "Maria"), "Name\n1 | Maria"),
     "table at the very end": (r"Before\par " + row("A", "B") + row("1", "2"), "Before\n\nA: 1; B: 2"),
 }
 
 
-@pytest.mark.parametrize("body, expected", cases(TABLE_CASES, TABLES, []))
+@pytest.mark.parametrize("body, expected", TABLE_CASES.values(), ids=TABLE_CASES.keys())
 def test_read_rtf_tables(tmp_path, body, expected):
     assert read(tmp_path, rtf(body)) == expected
 
@@ -148,7 +153,7 @@ HEADING_CASES = {
 }
 
 
-@pytest.mark.parametrize("body, expected", cases(HEADING_CASES, HEADINGS, ['a style that is not a heading', 'outline level 9 is body text', 'style that is not in the style sheet']))
+@pytest.mark.parametrize("body, expected", cases(HEADING_CASES, HEADINGS, ['a style that is not a heading', 'outline level 9 is body text', 'style that is not in the style sheet', 'heading style inside a table is a cell']))
 def test_read_rtf_headings(tmp_path, body, expected):
     assert read(tmp_path, rtf(body, STYLES)) == expected
 
