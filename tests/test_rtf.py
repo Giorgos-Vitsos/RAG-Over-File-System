@@ -20,7 +20,6 @@ def read(tmp_path, text, encoding="ascii"):
 
 
 # the reader is written in four pieces; what a piece adds is xfail until that piece is written
-TEXT = pytest.mark.xfail(strict=True, reason="rtf piece 1: text")
 LINKS = pytest.mark.xfail(strict=True, reason="rtf piece 2: links")
 TABLES = pytest.mark.xfail(strict=True, reason="rtf piece 3: tables")
 HEADINGS = pytest.mark.xfail(strict=True, reason="rtf piece 4: headings")
@@ -60,10 +59,15 @@ TEXT_CASES = {
     "pictures and objects": (r"Before {\pict\pngblip 89504e470d0a}{\object{\*\objdata 0102}}after\par", "", "Before after"),
     "unknown parts marked with star": (r"Text{\*\unknownthing secret}\par", "", "Text"),
     "text after the last paragraph": (r"First.\par Last", "", "First.\n\nLast"),
+    "a } too many does not stop the reading": (r"First.\par}} Second.\par", "", "First.\n\nSecond."),
+    "backslash and a windows new line is a paragraph": ("One\\\r\nTwo", "", "One\n\nTwo"),
+    "unicode above 32767 is written negative": (r"\u-4064?x\par", "", chr(61472) + "x"),
+    "a command after a unicode is its fallback": (r"\uc1\u915\bullet x\par", "", "Γx"),
+    "font names written with bytes are not text": (r"\f1 \'e1\par", r"{\fonttbl{\f1\fcharset161 \'c1\'f1\'e9\'e1\'eb;}}", "α"),
 }
 
 
-@pytest.mark.parametrize("body, head, expected", cases(TEXT_CASES, TEXT, ['line break inside a paragraph', 'tab', 'new lines in the file are not text', 'formatting groups keep their text', 'unicode with one fallback character', 'unicode with two fallback characters', 'unicode with no fallback', 'fallback count of a group ends with it', 'settings, styles and generator are not text', 'headers, footers, footnotes, document info', 'pictures and objects', 'unknown parts marked with star']))
+@pytest.mark.parametrize("body, head, expected", TEXT_CASES.values(), ids=TEXT_CASES.keys())
 def test_read_rtf_text(tmp_path, body, head, expected):
     assert read(tmp_path, rtf(body, head)) == expected
 

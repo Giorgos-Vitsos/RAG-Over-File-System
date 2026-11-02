@@ -6,14 +6,25 @@ from .tables import format_rows
 from .text import clean_lines,with_address
 
 RTF_TOKENS=re.compile(r"\\([a-zA-Z]+)(-?\d+)? ?|\\'([0-9a-fA-F]{2})|\\(.)|([{}])|([^\\{}\r\n]+)|[\r\n]+",re.S)
-SKIP={"fonttbl", "stylesheet", "colortbl", "info", "pict", "object", "header", "headerl", "headerr", "headerf", 
+SKIP={"stylesheet", "colortbl", "info", "pict", "object", "header", "headerl", "headerr", "headerf", 
       "footer", "footerl", "footerr", "footerf", "footnote", "pntext", "listtext", "pn", "xe", "tc"}
+COMMAND_CHARS={#commands that are a character
+    "line":"\n","tab":"\t","emdash":chr(0x2014),"endash":chr(0x2013),"bullet":chr(0x2022),"lquote":chr(0x2018),
+    "rquote":chr(0x2019),"ldblquote":chr(0x201c),"rdblquote":chr(0x201d),"emspace":" ","enspace":" ",
+}
+SYMBOL_CHARS={#a \ and one character that is a character
+    "~":chr(0xa0),"_":"-","-":"","{":"{","}":"}","\\":"\\"
+}
+CHARSETS={161:"cp1253",162:"cp1254",204:"cp1251",238:"cp1250",177:"cp1255",178:"cp1256",186:"cp1257"}
 
 @dataclass
 class State:
     skip: bool=False
     first_command: bool=False
     star: bool=False
+    uc: int=1#num of chars following \u
+    font_table: bool=False
+    font:int|None=None
 
 def read_rtf(path: Path)->str:
     data=path.read_bytes()
@@ -24,33 +35,92 @@ def read_rtf(path: Path)->str:
     paragraphs=[]
     parts=[]
     groups=[State()]
+    skip_chars=0
+    page_code="cp1252"
+    fonts={}
+    font_def=None
     for match in RTF_TOKENS.finditer(file_text):
         command=match.group(1)
+        number=match.group(2)
+        hex_byte=match.group(3)
         symbol=match.group(4)
         brace=match.group(5)
         text=match.group(6)
         curr_group=groups[-1]
         if brace=="{":#starts a group
-            new_group=replace(curr_group, first=True, star=False)
+            new_group=replace(curr_group, first_command=True, star=False)
             groups.append(new_group)
         elif brace=="}":#ends a group
             if len(groups)>1:
                 groups.pop()
         elif command is not None:
-            if curr_group.first_command and (command in SKIP or curr_group.star):#if first command tells us to skip
-                curr_group.skip=True
+            if curr_group.first_command:
+                if command=="fonttbl":
+                    curr_group.font_table=True
+                elif command in SKIP or curr_group.star:
+                    curr_group.skip=True
             curr_group.first_command=False
             if curr_group.skip:
                 continue
-            if command=="par":
+            if curr_group.font_table:
+                if command=="f":
+                    if number is not None:
+                        font_def=int(number)
+                elif command=="fcharset" and number is not None and font_def is not None and int(number) in CHARSETS:
+                    fonts[font_def]=CHARSETS[int(number)]
+                continue
+            if skip_chars>0:#command counts as char
+                skip_chars-=1
+                continue
+            if command=="par":#end of a paragraph
                 add_paragraph(parts,paragraphs)
+            elif command=="uc":
+                if number is not None:
+                    curr_group.uc=int(number)
+                else:
+                    curr_group.uc=1
+            elif command=="u":
+                if number is not None:
+                    code=int(number)
+                    if code<0:#its 16 bit so some numbers are written negative
+                        code+=65536
+                    parts.append(chr(code))
+                    skip_chars=curr_group.uc
+            elif command=="ansicpg" and number is not None:
+                page_code=f"cp{number}"
+            elif command=="f" and number is not None:
+                curr_group.font=int(number)
+            elif command in COMMAND_CHARS:
+                parts.append(COMMAND_CHARS[command])
         elif symbol=="*":
             curr_group.star=True
+        elif symbol is not None:
+            curr_group.first_command=False
+            if curr_group.skip or curr_group.font_table:
+                continue
+            if symbol=="\n" or symbol=="\r":
+                add_paragraph(parts,paragraphs)
+            elif symbol in SYMBOL_CHARS:
+                parts.append(SYMBOL_CHARS[symbol])
+        elif hex_byte is not None:
+            curr_group.first_command=False
+            if curr_group.skip or curr_group.font_table:
+                continue
+            if skip_chars>0:#byte counts as a char to be skipped
+                skip_chars-=1
+            else:
+                parts.append(decode(chr(int(hex_byte,16)),curr_group.font,fonts,page_code))
         elif text is not None:
             curr_group.first_command=False
-            if not curr_group.skip:
-                parts.append(text)
-    add_paragraph(parts,paragraphs)
+            if curr_group.skip or curr_group.font_table:
+                continue
+            if skip_chars>0:
+                skipped=min(skip_chars,len(text))
+                skip_chars-=skipped
+                text=text[skipped:]
+            if text:
+                parts.append(decode(text,curr_group.font,fonts,page_code))
+    add_paragraph(parts,paragraphs)#the last paragraph ends without "par"
     return "\n\n".join(paragraphs) 
     
 def add_paragraph(parts:list[str],paragraphs:list[str])->None:
@@ -58,3 +128,11 @@ def add_paragraph(parts:list[str],paragraphs:list[str])->None:
     if text:
         paragraphs.append(text)
     parts.clear()
+
+def decode(text:str,font:int|None,fonts:dict[int,str],code_page:str)->str:
+    if font is not None and font in fonts:
+        code_page=fonts[font]
+    try:
+        return text.encode("latin-1").decode(code_page,errors="replace")
+    except LookupError:
+        return text

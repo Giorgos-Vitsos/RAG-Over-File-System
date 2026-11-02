@@ -12,7 +12,6 @@ dependencies = [
     "python-pptx",               
     "openpyxl",
     "odfpy",
-    "striprtf",
     "ebooklib",
     "beautifulsoup4",
     "markdown-it-py",
