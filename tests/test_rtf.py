@@ -19,18 +19,9 @@ def read(tmp_path, text, encoding="ascii"):
     return read_rtf(f)
 
 
-# the reader is written in four pieces; what a piece adds is xfail until that piece is written
-HEADINGS = pytest.mark.xfail(strict=True, reason="rtf piece 4: headings")
-
-
-# the cases of a dict as pytest params, marked with `mark` unless they already pass
-def cases(table, mark, guards=()):
-    return [pytest.param(*value, id=key, marks=() if key in guards else mark) for key, value in table.items()]
-
-
 GREEK_FONTS = r"{\fonttbl{\f0\fswiss Arial;}{\f1\fswiss\fcharset161 Arial Greek;}}"
 STYLES = (r"{\stylesheet{\s0 Normal;}{\s1\outlinelevel0 heading 1;}{\s2\sbasedon0 heading 2;}"
-          r"{\s15 Title;}{\s20 Quote;}}")
+          r"{\s15 Title;}{\s20 Quote;}{\s3 heading 2,H2;}}")
 
 # piece 1, text: (body, head, text)
 TEXT_CASES = {
@@ -61,6 +52,7 @@ TEXT_CASES = {
     "backslash and a windows new line is a paragraph": ("One\\\r\nTwo", "", "One\n\nTwo"),
     "unicode above 32767 is written negative": (r"\u-4064?x\par", "", chr(61472) + "x"),
     "a command after a unicode is its fallback": (r"\uc1\u915\bullet x\par", "", "Γx"),
+    "font names with symbols are not text": (r"\f1 Body\par", r"{\fonttbl{\f1 Times\_New\~Roman;}}", "Body"),
     "font names written with bytes are not text": (r"\f1 \'e1\par", r"{\fonttbl{\f1\fcharset161 \'c1\'f1\'e9\'e1\'eb;}}", "α"),
 }
 
@@ -149,11 +141,12 @@ HEADING_CASES = {
     "pard ends the heading": (r"\pard\s1 Intro\par Still heading\par\pard Body\par", "# Intro\n\n# Still heading\n\nBody"),
     "heading of two lines": (r"\pard\s1 First\line second\par", "# First second"),
     "heading style inside a table is a cell": (row("Name", r"\s1 Grade") + row("Maria", "9"), "Name: Maria; Grade: 9"),
+    "style names with aliases after a comma": (r"\pard\s3 Part\par", "## Part"),
     "style that is not in the style sheet": (r"\pard\s7 Text\par", "Text"),
 }
 
 
-@pytest.mark.parametrize("body, expected", cases(HEADING_CASES, HEADINGS, ['a style that is not a heading', 'outline level 9 is body text', 'style that is not in the style sheet', 'heading style inside a table is a cell']))
+@pytest.mark.parametrize("body, expected", HEADING_CASES.values(), ids=HEADING_CASES.keys())
 def test_read_rtf_headings(tmp_path, body, expected):
     assert read(tmp_path, rtf(body, STYLES)) == expected
 
