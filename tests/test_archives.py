@@ -5,6 +5,7 @@ import io
 import random
 import tarfile
 import zipfile
+from typing import Literal
 from pathlib import Path
 
 import libarchive
@@ -12,7 +13,7 @@ import pytest
 import tempfile
 
 from rag_fs.config import CorpusConfig
-from rag_fs.ingest.pipeline import read_archive
+from rag_fs.ingest.pipeline import ReadState, read_archive
 from rag_fs.ingest.file_scanner import scan
 
 NOTES = "Σημειώσεις του μαθήματος για την εξέταση."
@@ -28,7 +29,7 @@ def read(tmp_path, name, make, skip=None, **limits):
     make(f)
     config = CorpusConfig(roots=[root], **limits)
     scanned = next(s for s in scan(config).files if s.rel_path == Path(name))
-    return read_archive(scanned, config, set() if skip is None else skip)
+    return read_archive(scanned, ReadState(config, skip=set() if skip is None else skip))
 
 
 # (path, status, type, text) of every document, sorted by path
@@ -49,7 +50,7 @@ def zip_of(files):
     return make
 
 
-def tar_of(files, mode="w"):
+def tar_of(files, mode: Literal["w", "w:gz"] = "w"):
     def make(f):
         with tarfile.open(f, mode) as t:
             for name, data in files.items():
@@ -195,7 +196,7 @@ def test_read_archive_in_the_second_root(tmp_path):
     zip_of({"notes.txt": CODE})(second / "work.zip")
     config = CorpusConfig(roots=[first, second])
     scanned = next(s for s in scan(config).files if s.rel_path == Path("work.zip"))
-    assert [(d.root_id, str(d.file_path)) for d in read_archive(scanned, config, set())] == [("root_1", "work.zip/notes.txt")]
+    assert [(d.root_id, str(d.file_path)) for d in read_archive(scanned, ReadState(config))] == [("root_1", "work.zip/notes.txt")]
 
 
 MB = 1024 * 1024
@@ -388,7 +389,7 @@ def test_read_archive_inside_archive_in_the_second_root(tmp_path, temp_dir):
     zip_of({"inner.zip": zip_bytes({"main.py": CODE})})(second / "work.zip")
     config = CorpusConfig(roots=[first, second])
     scanned = next(s for s in scan(config).files if s.rel_path == Path("work.zip"))
-    docs = read_archive(scanned, config, set())
+    docs = read_archive(scanned, ReadState(config))
     assert [(d.root_id, str(d.file_path)) for d in docs] == [("root_1", "work.zip/inner.zip/main.py")]
 
 

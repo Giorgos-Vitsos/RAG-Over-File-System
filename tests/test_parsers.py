@@ -12,7 +12,7 @@ import openpyxl
 from openpyxl.worksheet.hyperlink import Hyperlink
 import pandas as pd
 import pptx
-from lxml import etree as lxml_etree
+from lxml import etree as lxml_etree  # pyright: ignore[reportAttributeAccessIssue] (lxml has no type stubs)
 import pytest
 from docx.opc.constants import RELATIONSHIP_TYPE as DOCX_RT
 from docx.opc.packuri import PackURI
@@ -2028,7 +2028,7 @@ def odf_chart(title, categories, series):
         body.addElement(row)
     table.addElement(body)
     chart.addElement(table)
-    doc.chart.addElement(chart)
+    doc.chart.addElement(chart)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
     return doc
 
 
@@ -2042,11 +2042,11 @@ def object_frame(name):
 # an odt with a paragraph and then a chart in its own paragraph
 def chart_odt(f, categories, series, title=None):
     doc = OpenDocumentText()
-    doc.text.addElement(OdfP(text="Πριν"))
+    doc.text.addElement(OdfP(text="Πριν"))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
     name = doc.addObject(odf_chart(title, categories, series))
     paragraph = OdfP()
     paragraph.addElement(object_frame(name))
-    doc.text.addElement(paragraph)
+    doc.text.addElement(paragraph)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
     doc.save(str(f))
     return read_odf(f)
 
@@ -2090,11 +2090,11 @@ def test_read_odp_chart(tmp_path):
 @pytest.mark.parametrize("missing", [True, False], ids=["object not in the file", "object is not a chart"])
 def test_read_odt_object_that_is_not_a_chart(tmp_path, missing):
     doc = OpenDocumentText()
-    doc.text.addElement(OdfP(text="Πριν"))
+    doc.text.addElement(OdfP(text="Πριν"))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
     name = "./Object 9" if missing else doc.addObject(OpenDocumentText())
     paragraph = OdfP()
     paragraph.addElement(object_frame(name))
-    doc.text.addElement(paragraph)
+    doc.text.addElement(paragraph)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
     f = tmp_path / "object.odt"
     doc.save(str(f))
     assert read_odf(f) == "Πριν"
@@ -2286,8 +2286,8 @@ def test_parse_file_reads_flat_xml(tmp_path, name, data, content_type, expected)
 def test_flat_xml_reads_like_its_zip(tmp_path):
     doc = OpenDocumentText()
     heading = OdfH(outlinelevel=1, text="Εισαγωγή")
-    doc.text.addElement(heading)
-    doc.text.addElement(OdfP(text="Πρώτη παράγραφος."))
+    doc.text.addElement(heading)  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
+    doc.text.addElement(OdfP(text="Πρώτη παράγραφος."))  # pyright: ignore[reportAttributeAccessIssue] (odfpy adds it at runtime)
     odt = tmp_path / "notes.odt"
     doc.save(str(odt))
     flat = flat_odf("application/vnd.oasis.opendocument.text",

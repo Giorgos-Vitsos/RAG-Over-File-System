@@ -94,7 +94,7 @@ def test_read_rtf_links(tmp_path, body, expected):
 
 
 # piece 3, tables
-def row(*cells, defs="", table=True):
+def row(*cells, defs=None, table=True):
     cellx = "".join(rf"{d}\cellx{2000 * (i + 1)}" for i, d in enumerate(defs or [""] * len(cells)))
     inside = r"\intbl " if table else " "
     return r"\trowd" + cellx + r"\pard" + inside + "".join(rf"{c}\cell " for c in cells) + r"\row "
