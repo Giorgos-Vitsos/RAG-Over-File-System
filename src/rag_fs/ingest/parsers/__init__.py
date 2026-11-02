@@ -91,6 +91,7 @@ def parse_file(scanned: ScannedFile,ocr:OCRConfig=OCRConfig())->Document:
         else:
             return make_doc(ext,"","binary","unsupported",scanned)
     text=unify_newlines(text).removeprefix("\ufeff")
+    text=text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")#connects characters that are represented with 2 chars
     if content_type_of(ext)!="code":#in code we dont change any char
         text=normalize(text)
     if text.strip()=="":

@@ -1,5 +1,6 @@
 import datetime
 import itertools
+import json
 import logging
 import os
 import re
@@ -71,6 +72,32 @@ def parse_all(tmp_path, files):
 # same as parse_all for a single file
 def parse_one(tmp_path, name, data):
     return parse_all(tmp_path, {name: data})[name]
+
+
+# rtf (\\u) and json write a character beyond 16 bits as two halves; a half alone cannot be saved as utf-8,
+# so parse_file joins the halves and turns a half alone into the replacement character
+def notebook_bytes(text):
+    cell = {"cell_type": "markdown", "metadata": {}, "source": [text]}
+    return json.dumps({"cells": [cell], "metadata": {}, "nbformat": 4, "nbformat_minor": 5}).encode()
+
+
+SMILE, HIGH, LOW, BAD = chr(0x1F600), chr(0xD83D), chr(0xDE00), chr(0xFFFD)
+HALVES = {
+    "rtf emoji in two halves": ("smile.rtf", rb"{\rtf1\ansi Smile \u-10179?\u-8704? end\par}", "Smile " + SMILE + " end"),
+    "rtf first half alone": ("half.rtf", rb"{\rtf1\ansi A\u-10179?B\par}", "A" + BAD + "B"),
+    "rtf halves the wrong way": ("back.rtf", rb"{\rtf1\ansi A\u-8704?\u-10179?B\par}", "A" + BAD + BAD + "B"),
+    "rtf half at the end": ("end.rtf", rb"{\rtf1\ansi A\u-10179?}", "A" + BAD),
+    "notebook emoji in two halves": ("smile.ipynb", notebook_bytes("A" + SMILE + "B"), "A" + SMILE + "B"),
+    "notebook half alone": ("half.ipynb", notebook_bytes("A" + HIGH + "B"), "A" + BAD + "B"),
+    "notebook second half alone": ("low.ipynb", notebook_bytes("A" + LOW + "B"), "A" + BAD + "B"),
+}
+
+
+@pytest.mark.parametrize("name, data, expected", HALVES.values(), ids=HALVES.keys())
+def test_parse_file_joins_halves_of_characters(tmp_path, name, data, expected):
+    doc = parse_one(tmp_path, name, data)
+    assert ascii(doc.raw_text) == ascii(expected)#ascii: a half alone in a failure message breaks pytest
+    doc.raw_text.encode("utf-8")#it can be saved
 
 
 # makes a test file outside the corpus and returns its bytes
