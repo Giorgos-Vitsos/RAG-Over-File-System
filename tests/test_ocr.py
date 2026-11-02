@@ -580,3 +580,20 @@ JOIN_PAGES_CASES = {
 @pytest.mark.parametrize("before, after, words, expected", JOIN_PAGES_CASES.values(), ids=JOIN_PAGES_CASES.keys())
 def test_join_broken_pages(before, after, words, expected):
     assert join_broken_pages(before, after, words) == expected
+
+
+# the Tesseract uses one thread in each process (D67): the same text every time, and many workers do not
+# fight over the cores. A value someone has set on purpose is kept
+@pytest.mark.parametrize("before, after", [
+    pytest.param(None, "1", id="not set"),
+    pytest.param("4", "4", id="set by the user")])
+def test_tesseract_one_thread(before, after):
+    import os
+    import subprocess
+    import sys
+    env = {k: v for k, v in os.environ.items() if k != "OMP_THREAD_LIMIT"}
+    if before is not None:
+        env["OMP_THREAD_LIMIT"] = before
+    code = "import os, rag_fs.ingest.parsers.ocr; print(os.environ.get('OMP_THREAD_LIMIT'))"
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.strip()
+    assert out == after

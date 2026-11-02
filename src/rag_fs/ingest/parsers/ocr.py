@@ -4,6 +4,9 @@ import pytesseract
 from PIL import Image, ImageOps
 from .pages import drop_repeated_edges,fix_text_block,get_words,join_broken_pages
 from .text import WORD,is_greek
+import os
+
+os.environ.setdefault("OMP_THREAD_LIMIT","1")
 
 LOOKALIKE = str.maketrans("ABEZHIKMNOPTYXoviukxap", "ΑΒΕΖΗΙΚΜΝΟΡΤΥΧονιυκχαρ")
 OCR_SAMPLE=10
