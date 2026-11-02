@@ -20,7 +20,6 @@ def read(tmp_path, text, encoding="ascii"):
 
 
 # the reader is written in four pieces; what a piece adds is xfail until that piece is written
-LINKS = pytest.mark.xfail(strict=True, reason="rtf piece 2: links")
 TABLES = pytest.mark.xfail(strict=True, reason="rtf piece 3: tables")
 HEADINGS = pytest.mark.xfail(strict=True, reason="rtf piece 4: headings")
 
@@ -86,16 +85,19 @@ LINK_CASES = {
         r'{\field{\*\fldinst {HYPERLINK }{"https://www.uoc.gr/a" \\o "tip"}}{\fldrslt {\ul University}}}\par',
         "University (https://www.uoc.gr/a)"),
     "link to a place in the document": (r'{\field{\*\fldinst HYPERLINK \\l "_Toc12"}{\fldrslt Chapter 2}}\par', "Chapter 2"),
+    "text before a link that is its own address": (
+        r'Site: {\field{\*\fldinst HYPERLINK "https://www.uoc.gr"}{\fldrslt www.uoc.gr}}\par', "Site: www.uoc.gr"),
     "address that is the text": (r'{\field{\*\fldinst HYPERLINK "https://www.uoc.gr"}{\fldrslt www.uoc.gr}}\par', "www.uoc.gr"),
     "other fields keep their result": (r"Page {\field{\*\fldinst PAGE}{\fldrslt 3}} of 9\par", "Page 3 of 9"),
     "field without a result": (r"A{\field{\*\fldinst PAGE}}B\par", "AB"),
+    "link without a result leaves the text before it": (r'A{\field{\*\fldinst HYPERLINK "https://a.gr"}}B\par', "AB"),
     "two links in a paragraph": (
         r'{\field{\*\fldinst HYPERLINK "https://a.gr"}{\fldrslt A}} and {\field{\*\fldinst HYPERLINK "https://b.gr"}{\fldrslt B}}\par',
         "A (https://a.gr) and B (https://b.gr)"),
 }
 
 
-@pytest.mark.parametrize("body, expected", cases(LINK_CASES, LINKS, ['link to a place in the document', 'address that is the text', 'other fields keep their result', 'field without a result']))
+@pytest.mark.parametrize("body, expected", LINK_CASES.values(), ids=LINK_CASES.keys())
 def test_read_rtf_links(tmp_path, body, expected):
     assert read(tmp_path, rtf(body)) == expected
 

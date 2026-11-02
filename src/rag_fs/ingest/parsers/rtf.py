@@ -25,6 +25,8 @@ class State:
     uc: int=1#num of chars following \u
     font_table: bool=False
     font:int|None=None
+    field: bool=False
+    instruction: bool=False
 
 def read_rtf(path: Path)->str:
     data=path.read_bytes()
@@ -39,6 +41,7 @@ def read_rtf(path: Path)->str:
     page_code="cp1252"
     fonts={}
     font_def=None
+    fields=[]
     for match in RTF_TOKENS.finditer(file_text):
         command=match.group(1)
         number=match.group(2)
@@ -48,15 +51,26 @@ def read_rtf(path: Path)->str:
         text=match.group(6)
         curr_group=groups[-1]
         if brace=="{":#starts a group
-            new_group=replace(curr_group, first_command=True, star=False)
+            new_group=replace(curr_group, first_command=True, star=False,field=False)#those are not inhereted
             groups.append(new_group)
         elif brace=="}":#ends a group
             if len(groups)>1:
-                groups.pop()
+                closed=groups.pop()
+                if closed.field and fields:#if we closed a field
+                    end_field(parts,fields.pop())
+                    
         elif command is not None:
             if curr_group.first_command:
                 if command=="fonttbl":
                     curr_group.font_table=True
+                elif command=="field":
+                    curr_group.field=True
+                    fields.append({"code":"","start":None})
+                elif command=="fldinst":
+                    curr_group.instruction=True
+                elif command=="fldrslt":#field result
+                    if fields:
+                        fields[-1]["start"]=len(parts)#where the result starts
                 elif command in SKIP or curr_group.star:
                     curr_group.skip=True
             curr_group.first_command=False
@@ -98,6 +112,10 @@ def read_rtf(path: Path)->str:
             curr_group.first_command=False
             if curr_group.skip or curr_group.font_table:
                 continue
+            if curr_group.instruction:
+                if fields and symbol in SYMBOL_CHARS:#we fix rtf instruction symbols
+                    fields[-1]["code"]+=SYMBOL_CHARS[symbol]
+                continue
             if symbol=="\n" or symbol=="\r":
                 add_paragraph(parts,paragraphs)
             elif symbol in SYMBOL_CHARS:
@@ -119,7 +137,12 @@ def read_rtf(path: Path)->str:
                 skip_chars-=skipped
                 text=text[skipped:]
             if text:
-                parts.append(decode(text,curr_group.font,fonts,page_code))
+                text=decode(text,curr_group.font,fonts,page_code)
+                if curr_group.instruction:
+                    if fields:
+                        fields[-1]["code"]+=text
+                else:
+                    parts.append(text)
     add_paragraph(parts,paragraphs)#the last paragraph ends without "par"
     return "\n\n".join(paragraphs) 
     
@@ -136,3 +159,11 @@ def decode(text:str,font:int|None,fonts:dict[int,str],code_page:str)->str:
         return text.encode("latin-1").decode(code_page,errors="replace")
     except LookupError:
         return text
+
+def end_field(parts:list[str],current:dict)->None:#the result of a link gets its address
+    start=current["start"]
+    if start is None:#no result
+        return
+    start=min(start,len(parts))#to be safe if parts where emptied before hand
+    result="".join(parts[start:])
+    parts[start:]=[with_address(result,field_address(current["code"]))]#we connect links with text
