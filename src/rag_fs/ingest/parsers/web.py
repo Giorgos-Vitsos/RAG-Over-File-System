@@ -1,7 +1,10 @@
 import json
+import posixpath
 import re
+import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import unquote
 from bs4 import BeautifulSoup
 from bs4.element import NavigableString, Tag
 from .markdown import markdown_text
@@ -187,3 +190,56 @@ def joined(value)->str:#notebooks text can be multiple lines as list
     if isinstance(value,list):
         return "".join(str(line) for line in value)
     return str(value or "")
+
+def read_epub(path:Path)->str:
+    with zipfile.ZipFile(path) as book:
+        names=set(book.namelist())#all of files of the zip
+        opf=opf_path(book)
+        folder=posixpath.dirname(opf)
+        hrefs,spine=read_opf(ET.fromstring(book.read(opf)),folder)
+        locked=locked_files(book,names)
+        blocks=[]
+        for idref in spine:#the reading order of the book
+            name=hrefs.get(idref)
+            if name is None or name not in names:#a page that is missing
+                continue
+            if name in locked:
+                raise ValueError(f"{path} has text locked with DRM")
+            text=html_text(book.read(name).decode("utf-8",errors="replace"))
+            if text:
+                blocks.append(text)
+    return "\n\n".join(blocks)
+
+def opf_path(book:zipfile.ZipFile)->str:
+    for element in ET.fromstring(book.read("META-INF/container.xml")).iter():
+        if element.tag.endswith("}rootfile"):
+            full_path=element.get("full-path")
+            if full_path:
+                return full_path
+    raise ValueError("the epub has no rootfile")
+
+def read_opf(package:ET.Element,folder:str)->tuple[dict[str,str],list[str]]:
+    hrefs={}
+    spine=[]
+    for element in package.iter():
+        if element.tag.endswith("}item"):
+            item_id=element.get("id")
+            href=element.get("href")
+            if item_id and href:
+                hrefs[item_id]=posixpath.normpath(posixpath.join(folder,unquote(href)))#"ch%201.xhtml" -> "ch 1.xhtml"
+        elif element.tag.endswith("}itemref"):
+            idref=element.get("idref")
+            if idref:
+                spine.append(idref)
+    return hrefs,spine
+
+def locked_files(book:zipfile.ZipFile,names:set[str])->set[str]:
+    locked=set()
+    if "META-INF/encryption.xml" not in names:#nothing is locked
+        return locked
+    for element in ET.fromstring(book.read("META-INF/encryption.xml")).iter():
+        if element.tag.endswith("}CipherReference"):
+            uri=element.get("URI")
+            if uri:
+                locked.add(posixpath.normpath(unquote(uri)))
+    return locked

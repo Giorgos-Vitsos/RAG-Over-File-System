@@ -1004,3 +1004,28 @@ def test_parse_file_fixes_lookalikes_of_a_word_broken_into_a_scanned_page(tmp_pa
     scan_pdf(tmp_path, [[(0.2, 0.3, "<p>Η εργασία και η άσκηση του προγραμ-</p>")], [(0.2, 0.5, SCAN)]])
     doc = parse_one(tmp_path, "mixed.pdf", (tmp_path / "scan.pdf").read_bytes())
     assert doc.raw_text == "Η εργασία και η άσκηση του προγραμματισμού ΚΑΙ η λύση της εργασίας."
+
+
+# the pdf reader prints nothing of its own (D99): no advice to install packages, no messages of the C library.
+# In the corpus scan they were hundreds of lines, and the advice went to stdout, where the summary goes
+def test_read_pdf_prints_nothing(tmp_path):
+    import subprocess
+    import sys
+    good = tmp_path / "good.pdf"
+    good.write_bytes(pdf_bytes(["<p>Κείμενο της σελίδας.</p>"]))
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 3 0 R>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n")
+    code = ("import sys\nfrom pathlib import Path\nfrom rag_fs.config import OCRConfig\n"
+            "from rag_fs.ingest.parsers.pdf import read_pdf\n"
+            "for name in sys.argv[1:]:\n"
+            "    try:\n        read_pdf(Path(name), OCRConfig())\n"
+            "    except Exception:\n        pass\n")
+    run = subprocess.run([sys.executable, "-c", code, str(good), str(broken)], capture_output=True, text=True)
+    assert (run.stdout, run.stderr) == ("", "")
+
+
+# the messages of the C library about broken pdfs are not shown (D99): in the corpus scan one broken pdf gave
+# ~80 lines. A pdf that makes them could not be built for a test, so the test asks pymupdf for its setting
+def test_mupdf_errors_are_not_shown():
+    import rag_fs.ingest.parsers.pdf  # noqa: F401 (the setting is made when the reader is imported)
+    assert pymupdf.TOOLS.mupdf_display_errors() is False

@@ -597,3 +597,27 @@ def test_tesseract_one_thread(before, after):
     code = "import os, rag_fs.ingest.parsers.ocr; print(os.environ.get('OMP_THREAD_LIMIT'))"
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True).stdout.strip()
     assert out == after
+
+
+# images in the netpbm formats (ppm, pgm, pbm, pnm) are pictures read with OCR, not text made of numbers (D99)
+
+
+def plain_ppm(img):
+    rgb = img.convert("RGB")
+    values = " ".join(str(v) for v in rgb.tobytes())
+    return f"P3\n{rgb.width} {rgb.height}\n255\n{values}\n".encode("ascii")
+
+
+@pytest.mark.parametrize("name, make", [
+    ("image.ppm", lambda img, f: img.save(f, format="PPM")),
+    ("image.pgm", lambda img, f: img.convert("L").save(f, format="PPM")),
+    ("image.pbm", lambda img, f: img.convert("1").save(f, format="PPM")),
+    ("image.pnm", lambda img, f: img.save(f, format="PPM")),
+    ("plain.ppm", lambda img, f: f.write_bytes(plain_ppm(img))),
+], ids=["ppm", "pgm", "pbm", "pnm", "ppm written as numbers"])
+def test_netpbm_images_are_read_with_ocr(tmp_path, name, make):
+    from test_parsers import parse_one
+    f = tmp_path / ("made" + name[name.index("."):])
+    make(picture("The deadline is strict."), f)
+    doc = parse_one(tmp_path, name, f.read_bytes())
+    assert (doc.parse_status, doc.raw_text) == ("ocr", "The deadline is strict.")

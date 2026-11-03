@@ -2411,3 +2411,29 @@ def test_alpha_files_are_code(tmp_path, name):
 @pytest.mark.parametrize("name", ["test1.in", "test1.out"])
 def test_compiler_inputs_and_outputs_are_text(tmp_path, name):
     assert parse_one(tmp_path, name, b"quad 1: assign x 5\n").content_type == "prose"
+
+
+# fixes from the first scan of the corpus (D99, 03/11)
+
+
+# a csv with the line ends of the old Mac (a \r alone): one row per line, not a failure
+def test_read_csv_old_mac_line_ends(tmp_path):
+    doc = parse_one(tmp_path, "grades.csv", b"Name,Grade\rMaria,9\rNikos,7\r")
+    assert (doc.parse_status, doc.raw_text) == ("ok", "Name: Maria; Grade: 9\nName: Nikos; Grade: 7")
+
+
+# a binary file with an extension we do not know is unsupported quietly: it is not a failure, and hundreds of
+# warnings for them hide the real failures (a parser we have that breaks is still logged, see above)
+def test_unknown_binary_is_not_a_warning(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING):
+        doc = parse_one(tmp_path, "r.0.0.mca", b"\x00\x01\x02" * 100)
+    assert doc.parse_status == "unsupported"
+    assert caplog.records == []
+
+
+# 3D models and icons written as text are numbers, not content: binary, found by their name only
+@pytest.mark.parametrize("name", ["model.obj", "model.mtl", "model.fbx", "model.dae", "model.stl", "scene.blend", "scene.usd",
+                                  "icon.xpm", "icon.xbm"])
+def test_models_and_icons_are_binary(tmp_path, name):
+    doc = parse_one(tmp_path, name, b"v 0.0 1.0 2.0\nv 1.0 2.0 3.0\nf 1 2 3\n")
+    assert (doc.parse_status, doc.content_type, doc.raw_text) == ("unsupported", "binary", "")

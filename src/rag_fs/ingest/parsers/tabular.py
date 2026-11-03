@@ -26,7 +26,7 @@ def read_csv(path: Path)->str:#normal text with seperators
             sep=csv.Sniffer().sniff(text[:5000],delimiters=",;\t|").delimiter#reads first 5k lines and guesses the seperator from the ,;\t| pool
         except csv.Error:
             sep=","
-    rows=list(csv.reader(io.StringIO(text),delimiter=sep))
+    rows=list(csv.reader(io.StringIO(text,newline=""),delimiter=sep))#opens the csv as a fake file in memory
     return format_rows(rows)
 
 def read_xlsx(path: Path)->str:

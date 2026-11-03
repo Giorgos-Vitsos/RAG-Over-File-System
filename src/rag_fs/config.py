@@ -13,7 +13,8 @@ class CorpusConfig:
     ignore_globs: list[str] = field(default_factory=lambda: [
         "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*",
         "desktop.ini", "Thumbs.db", ".DS_Store", "~$*", "._*","*.asset","*.mat","*.anim","*.prefab","*.controller",
-        "*.shadergraph","*.unity","*.mixer","*.inputactions","*.iml","*.csproj","*.sln","*.slnx","*.synctex.gz"
+        "*.shadergraph","*.unity","*.mixer","*.inputactions","*.iml","*.csproj","*.sln","*.slnx","*.synctex.gz",
+        "*.vcproj","*.vcxproj","*.vcxproj.filters","*.user","*.dsp","*.dsw","*.pbxproj","*.plist"
     ])
     ignore_dirs_with: dict[str, list[str]] = field(default_factory=lambda: {#we ignore these dirs only if they are generated with these files
         "Library": ["ArtifactDB", "PackageCache"],

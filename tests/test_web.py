@@ -248,3 +248,108 @@ def test_nbproject_is_ignored(tmp_path):
     result = scan(CorpusConfig(roots=[root]))
     assert [f.rel_path.as_posix() for f in result.files] == ["Lab1/Main.java"]
     assert [(p.name, r) for p, r in result.ignored] == [("nbproject", "ignored_dir")]
+
+
+# epub (D98): a zip of XHTML pages; the book is the pages of the spine, in its order
+
+CONTAINER = ('<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+             '<rootfiles><rootfile full-path="{opf}" media-type="application/oebps-package+xml"/></rootfiles></container>')
+
+
+def page(body, prolog=True):
+    head = '<?xml version="1.0" encoding="utf-8"?><!DOCTYPE html>' if prolog else ""
+    return head + f'<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title></head><body>{body}</body></html>'
+
+
+# an epub at f: `pages` {href inside the OPF folder: xhtml}, `spine` the hrefs in reading order
+def make_epub(f, pages, spine, opf="OEBPS/content.opf", container=True, encrypted=(), extra=None):
+    import zipfile
+    from urllib.parse import quote
+    folder = opf.rsplit("/", 1)[0] + "/" if "/" in opf else ""
+    ids = {href: f"item{i}" for i, href in enumerate(pages)}
+    manifest = "".join(f'<item id="{ids[h]}" href="{quote(h)}" media-type="application/xhtml+xml"/>' for h in pages)
+    itemrefs = "".join(f'<itemref idref="{ids[h]}"/>' for h in spine)
+    package = ('<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+               '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Βιβλίο</dc:title></metadata>'
+               f'<manifest>{manifest}</manifest><spine>{itemrefs}</spine></package>')
+    with zipfile.ZipFile(f, "w") as z:
+        z.writestr("mimetype", "application/epub+zip")
+        if container:
+            z.writestr("META-INF/container.xml", CONTAINER.format(opf=opf))
+        z.writestr(opf, package)
+        for href, xhtml in pages.items():
+            z.writestr(folder + href, xhtml.encode("utf-8"))
+        if encrypted:
+            refs = "".join(f'<EncryptedData xmlns="http://www.w3.org/2001/04/xmlenc#"><CipherData><CipherReference URI="{folder + h}"/>'
+                           "</CipherData></EncryptedData>" for h in encrypted)
+            z.writestr("META-INF/encryption.xml", f'<encryption xmlns="urn:oasis:names:tc:opendocument:xmlns:container">{refs}</encryption>')
+        for name, data in (extra or {}).items():
+            z.writestr(name, data)
+
+
+def epub_doc(tmp_path, **book):
+    f = tmp_path / "made.epub"
+    make_epub(f, **book)
+    return parse_one(tmp_path, "book.epub", f.read_bytes())
+
+
+EPUB_CASES = {
+    "pages in the order of the spine, not of the zip": (
+        dict(pages={"a.xhtml": page("<p>Δεύτερο.</p>"), "b.xhtml": page("<p>Πρώτο.</p>")}, spine=["b.xhtml", "a.xhtml"]),
+        "Πρώτο.\n\nΔεύτερο."),
+    "headings and paragraphs like html": (
+        dict(pages={"c1.xhtml": page("<h1>Κεφάλαιο 1</h1><p>Κείμενο.</p><h2>Ενότητα</h2><p>Άλλο.</p>")}, spine=["c1.xhtml"]),
+        "# Κεφάλαιο 1\n\nΚείμενο.\n\n## Ενότητα\n\nΆλλο."),
+    "the xml prolog and doctype are not text": (
+        dict(pages={"c1.xhtml": page("<p>Μόνο αυτό.</p>")}, spine=["c1.xhtml"]), "Μόνο αυτό."),
+    "pages in a folder next to the OPF": (
+        dict(pages={"text/c1.xhtml": page("<p>Μέσα σε φάκελο.</p>")}, spine=["text/c1.xhtml"]), "Μέσα σε φάκελο."),
+    "a name with a space, written %20 in the OPF": (
+        dict(pages={"ch 1.xhtml": page("<p>Με κενό.</p>")}, spine=["ch 1.xhtml"]), "Με κενό."),
+    "the OPF at the top of the zip": (
+        dict(pages={"c1.xhtml": page("<p>Χωρίς φάκελο.</p>")}, spine=["c1.xhtml"], opf="content.opf"), "Χωρίς φάκελο."),
+    "pages that are not in the spine are not read": (
+        dict(pages={"c1.xhtml": page("<p>Κείμενο.</p>"), "nav.xhtml": page("<nav><p>Περιεχόμενα</p></nav>")}, spine=["c1.xhtml"]),
+        "Κείμενο."),
+    "fonts made unreadable on purpose (not the text) are fine": (
+        dict(pages={"c1.xhtml": page("<p>Κείμενο.</p>")}, spine=["c1.xhtml"], encrypted=["fonts/a.otf"]), "Κείμενο."),
+}
+
+
+@pytest.mark.parametrize("book, text", EPUB_CASES.values(), ids=EPUB_CASES.keys())
+def test_read_epub(tmp_path, book, text):
+    doc = epub_doc(tmp_path, **book)
+    assert (doc.parse_status, doc.content_type, doc.raw_text) == ("ok", "prose", text)
+
+
+# a spine item that the manifest has but the zip does not: the rest of the book is read
+def test_read_epub_missing_page(tmp_path):
+    import zipfile
+    f = tmp_path / "made.epub"
+    make_epub(f, {"c1.xhtml": page("<p>Πρώτο.</p>"), "c2.xhtml": page("<p>Δεύτερο.</p>")}, ["c1.xhtml", "c2.xhtml"])
+    with zipfile.ZipFile(f) as z:
+        kept = {n: z.read(n) for n in z.namelist() if not n.endswith("c1.xhtml")}
+    with zipfile.ZipFile(f, "w") as z:
+        for n, data in kept.items():
+            z.writestr(n, data)
+    doc = parse_one(tmp_path, "book.epub", f.read_bytes())
+    assert (doc.parse_status, doc.raw_text) == ("ok", "Δεύτερο.")
+
+
+# what cannot be read is failed: no container, not a zip, text locked with DRM
+@pytest.mark.parametrize("make", [
+    lambda f: make_epub(f, {"c1.xhtml": page("<p>x</p>")}, ["c1.xhtml"], container=False),
+    lambda f: f.write_bytes(b"not a zip at all"),
+    lambda f: make_epub(f, {"c1.xhtml": page("<p>x</p>")}, ["c1.xhtml"], encrypted=["c1.xhtml"]),
+], ids=["no container", "not a zip", "drm on the text"])
+def test_read_epub_failed(tmp_path, make):
+    f = tmp_path / "made.epub"
+    make(f)
+    doc = parse_one(tmp_path, "book.epub", f.read_bytes())
+    assert (doc.parse_status, doc.raw_text) == ("failed", "")
+
+
+# a book with an empty spine has no text
+def test_read_epub_empty(tmp_path):
+    doc = epub_doc(tmp_path, pages={"c1.xhtml": page("<p>x</p>")}, spine=[])
+    assert doc.parse_status == "empty"

@@ -421,3 +421,16 @@ def test_scan_known_does_not_skip_the_limits(two_files):
     result = scan(CorpusConfig(roots=[root], max_file_size_mb=1), known_of(root, "big.txt"))
     assert "big.txt" not in [f.rel_path.name for f in result.files]
     assert (root / "big.txt", "too_large") in result.ignored
+
+
+# project files of the IDEs are settings, not content, like the .csproj/.sln/.iml of D71 (D99)
+@pytest.mark.parametrize("name", ["fltk.vcproj", "fltk.vcxproj", "fltk.vcxproj.filters", "fltk.vcxproj.user", "fltk.dsp", "fltk.dsw",
+                                  "project.pbxproj", "Info.plist"])
+def test_ide_project_files_are_ignored(tmp_path, name):
+    root = tmp_path / "corpus"
+    (root / "ide").mkdir(parents=True)
+    (root / "ide" / name).write_text("<settings/>")
+    (root / "ide" / "main.cpp").write_text("int main(){}")
+    result = scan(CorpusConfig(roots=[root]))
+    assert (root / "ide" / name, "ignored_file") in result.ignored
+    assert [f.rel_path.name for f in result.files] == ["main.cpp"]

@@ -7,6 +7,9 @@ from .text import WORD,count_chars,fix_suspicious_text
 from PIL import Image
 from rag_fs.config import OCRConfig
 
+pymupdf.no_recommend_layout()#both hide useless notifications
+pymupdf.TOOLS.mupdf_display_errors(False)
+
 EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut

@@ -11,7 +11,8 @@ from .pdf import read_pdf
 from .rtf import read_rtf
 from .tabular import read_csv,read_xls,read_xlsx
 from .text import normalize,read_text,unify_newlines
-from .web import read_html,read_notebook,read_xml
+from .mail import read_eml
+from .web import read_epub,read_html,read_notebook,read_xml
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ PARSERS={
     ".xhtml": read_html,
     ".xml": read_xml,
     ".ipynb": read_notebook,
+    ".epub": read_epub,
+    ".eml": read_eml,
 }
 for ext in CODE_EXT:
     PARSERS[ext]=read_text
@@ -68,6 +71,10 @@ OCR_PARSERS={
     ".bmp": read_image,
     ".gif": read_image,
     ".webp": read_image,
+    ".ppm": read_image,
+    ".pgm": read_image,
+    ".pbm": read_image,
+    ".pnm": read_image,
     ".pdf": read_pdf,
     ".xps": read_pdf,
     ".oxps": read_pdf,
@@ -85,8 +92,8 @@ def parse_file(scanned: ScannedFile,ocr:OCRConfig=OCRConfig())->Document:
         else:
             text=parser(scanned.abs_path)
     except Exception as e:
-        log.warning(f"cannot parse {scanned.rel_path}: {e}")
         if ext in PARSERS or ext in OCR_PARSERS:
+            log.warning(f"cannot parse {scanned.rel_path}: {e}")
             return make_doc(ext,"",content_type_of(ext),"failed",scanned)
         else:
             return make_doc(ext,"","binary","unsupported",scanned)
