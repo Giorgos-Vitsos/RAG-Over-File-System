@@ -12,10 +12,9 @@ dependencies = [
     "python-pptx",               
     "openpyxl",
     "odfpy",
-    "pandas",
-    "striprtf",
     "ebooklib",
     "beautifulsoup4",
+    "markdown-it-py",
     "lxml",
     "pytesseract",
     "Pillow",
@@ -26,12 +25,14 @@ dependencies = [
     "sentence-transformers",
     "chromadb",
     "rank_bm25",
-    "charset-normalizer"
+    "charset-normalizer",
+    "xlrd",
+    "libarchive-c"
 ]
 
 [project.optional-dependencies]     # optional groups: pip install -e ".[research]"
 research = [ "scipy","statsmodels","ragas" ]
-dev = [ "pytest" ]
+dev = [ "pytest","pytest-xdist","pyright","pandas" ]
 
 [tool.setuptools.packages.find]
 where = ["src"]

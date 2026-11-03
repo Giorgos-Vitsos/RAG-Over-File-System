@@ -6,14 +6,54 @@ import yaml
 class CorpusConfig:
     roots: list[Path] = field(default_factory=list)
     ignore_dirs: list[str] = field(default_factory=lambda: [
-        ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules",".pytest_cache",".mypy_cache","*.egg-info"
+        ".git", ".venv", ".ssh", ".cache", "__pycache__", "node_modules",".pytest_cache",".mypy_cache","*.egg-info",
+        "__MACOSX", ".ipynb_checkpoints", ".idea", ".vscode", ".vs", ".settings", ".metadata", ".gradle", "cmake-build-*",
+        "nbproject"
     ])
     ignore_globs: list[str] = field(default_factory=lambda: [
-        "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*"
+        "*.temp", "*.log", "*.iso", ".env*", "*.pem", "id_rsa*",
+        "desktop.ini", "Thumbs.db", ".DS_Store", "~$*", "._*","*.asset","*.mat","*.anim","*.prefab","*.controller",
+        "*.shadergraph","*.unity","*.mixer","*.inputactions","*.iml","*.csproj","*.sln","*.slnx","*.synctex.gz",
+        "*.vcproj","*.vcxproj","*.vcxproj.filters","*.user","*.dsp","*.dsw","*.pbxproj","*.plist"
+    ])
+    ignore_dirs_with: dict[str, list[str]] = field(default_factory=lambda: {#we ignore these dirs only if they are generated with these files
+        "Library": ["ArtifactDB", "PackageCache"],
+        "Builds": ["UnityPlayer.dll", "*.apk"],
+        "UserSettings": ["EditorUserSettings.asset"],
+        "Temp": ["UnityLockfile"],
+        "build": ["CMakeCache.txt", "build.ninja", "*.class", "*.o", "*.obj"],
+        "out": ["*.class", "*.o", "*.obj"],
+        "bin": ["*.class", "*.o", "*.obj", "*.pdb"],
+        "obj": ["*.o", "*.obj", "project.assets.json"],
+    })
+    ignore_sidecars: list[str] = field(default_factory=lambda: [#we ignore those files only if the original exists
+        "*.meta"
     ])
     max_file_size_mb: int = 50
+    max_archive_size_mb: int = 2048
+    max_archive_depth: int = 4
     follow_symlinks: bool = False
 
+@dataclass(frozen=True)
+class OCRConfig:
+    languages: list[str]=field(default_factory=lambda:[
+        "ell","eng"
+    ])
+    tessdata_dir: str="~/.local/share/tessdata_best"
+    dpi: int=300
+    min_confidence: float=60
+    min_chars: int=20
+    min_image_size: int=300
+
+@dataclass(frozen=True)
+class IngestConfig:
+    workers: int=2
+    cache: str="data/cache.db"
+    documents: str="data/documents.jsonl"
+    def __post_init__(self):
+        if self.workers<1:
+            raise ValueError("IngestConfig have too little workers, workers must be 1+")
+        
 @dataclass(frozen=True)
 class ChunkingConfig:
     strategy: str = "content_aware"
@@ -51,16 +91,19 @@ class Config:
     models: ModelsConfig = field(default_factory=ModelsConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    ocr: OCRConfig= field(default_factory=OCRConfig)
+    ingest: IngestConfig=field(default_factory=IngestConfig)
 
 def load_config(path: str | Path)->Config:
-    data=yaml.safe_load(open(path)) or {}
-    allowed=["seed","corpus","chunking","models","retrieval","llm"]
+    with open(path,encoding="utf-8") as f:
+        data=yaml.safe_load(f) or {}
+    allowed=["seed","corpus","chunking","models","retrieval","llm","ocr","ingest"]
     for key in data:
         if key not in allowed:
             raise ValueError(f"unknown config section {key}")
     corpus_data= dict(data.get("corpus",{}))
     new_roots=[]
-    for r in corpus_data.get("roots",[]):
+    for r in corpus_data.get("roots",[]):#we make strs to paths
         new_roots.append(Path(r).expanduser())
     corpus_data["roots"]=new_roots
 
@@ -71,4 +114,6 @@ def load_config(path: str | Path)->Config:
         models=ModelsConfig(**data.get("models",{})),
         retrieval=RetrievalConfig(**data.get("retrieval",{})),
         llm=LLMConfig(**data.get("llm",{})),
+        ocr=OCRConfig(**data.get("ocr",{})),
+        ingest=IngestConfig(**data.get("ingest",{}))
     )

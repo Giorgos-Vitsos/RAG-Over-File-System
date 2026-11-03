@@ -3,10 +3,8 @@ from pathlib import Path
 import hashlib
 import os
 from rag_fs.config import CorpusConfig
-from rag_fs.models import to_relative
+from rag_fs.ingest.filetypes import MB,is_archive
 import fnmatch
-from collections import Counter
-import argparse
 
 @dataclass(frozen=True)
 class ScannedFile:
@@ -23,38 +21,35 @@ class ScannerResult:
     ignored: list[tuple[Path,str]]=field(default_factory=list)
 
 
-def file_sha256(path: str | Path)->str:
-    hash_temp=hashlib.sha256()
-    with open(path,"rb") as f:
-        n=1024*1024        
-        block=f.read(n)
-        while(block!=b""):
-            hash_temp.update(block)    
-            block=f.read(n)
-    return hash_temp.hexdigest()
-
-def scan(corpus: CorpusConfig)->ScannerResult:
+def scan(corpus: CorpusConfig,known:dict[Path,tuple[int,float,str]]|None=None)->ScannerResult:
     result=ScannerResult()
-    max_allowed_bytes=corpus.max_file_size_mb*(1024*1024)
+    max_allowed_bytes=corpus.max_file_size_mb*(MB)
+    max_allowed_archive_bytes=corpus.max_archive_size_mb*(MB)
     for i,root in enumerate(corpus.roots):
         root_id=f"root_{i}"
-        if not root.is_dir():
+        if not root.is_dir(): #we check if we can walk in this dir (allowed or able)
             raise FileNotFoundError(f"File scanner wasnt able to find {root}")
         for part in root.parts:
             if(matches(part,corpus.ignore_dirs)):
                 raise ValueError(f"Corpus root: {root} is not allowed, part: {part} is in the ignore list. Check your settings")
         for dirpath,dirnames,filenames in os.walk(root,followlinks=corpus.follow_symlinks):
+            siblings=set(filenames)|set(dirnames)
             keep=[]
-            for d in dirnames:
+            for d in dirnames: #for every dir insdie the current dir
                 if matches(d,corpus.ignore_dirs):
                     result.ignored.append((Path(dirpath)/d,"ignored_dir"))
+                elif is_generated(Path(dirpath)/d,corpus.ignore_dirs_with):
+                    result.ignored.append((Path(dirpath)/d,"generated_dir"))
                 else:
                     keep.append(d)
-            dirnames[:]=sorted(keep)
+            dirnames[:]=sorted(keep)#we want next loop to be only inside the allowed dirs
             for name in sorted(filenames):
                 path=Path(dirpath) / name
                 if matches(name,corpus.ignore_globs):
                     result.ignored.append((path,"ignored_file"))
+                    continue
+                if is_sidecar(name,siblings,corpus.ignore_sidecars):
+                    result.ignored.append((path,"sidecar_file"))
                     continue
                 if(path.is_symlink() and not corpus.follow_symlinks):
                     result.ignored.append((path,"ignored_symlink"))
@@ -66,78 +61,59 @@ def scan(corpus: CorpusConfig)->ScannerResult:
                     continue
                 try:
                     info = path.stat()
-                    if info.st_size > max_allowed_bytes:
+                    if is_archive(path):#archives are dirs so size can be bigger
+                        max_allowed=max_allowed_archive_bytes
+                    else:
+                        max_allowed=max_allowed_bytes
+                    if info.st_size > max_allowed:
                         result.ignored.append((path, "too_large"))
                         continue
-                    file_hash = file_sha256(path)
+                    if known is not None and path in known:
+                        size,time,sha256=known[path]
+                        if size==info.st_size and time==info.st_mtime:#if we already have hash it we dont hash again
+                            file_hash=sha256
+                        else:
+                            file_hash = file_sha256(path)#it has changed
+                    else:
+                        file_hash = file_sha256(path)#if this fails then is unreadable
                 except OSError:
                     result.ignored.append((path, "unreadable"))
                     continue
                 result.files.append(ScannedFile(root_id,path,rel_path,info.st_size,info.st_mtime,file_hash))
     return result
 
-
 def matches(name: str,patterns: list[str])->bool:
     for pattern in patterns:
         if fnmatch.fnmatch(name,pattern): return True
     return False
 
+def is_generated(path: Path,rules: dict[str,list[str]])->bool:
+    for dirname,markers in rules.items():
+        if not matches(path.name,[dirname]):#if it doesnt match the dirname no reason to test
+            continue
+        for _,dirnames,filenames in os.walk(path):
+            for name in dirnames+filenames:#for every dir/file in the path
+                if matches(name,markers):#if we find a marker then its probably generated
+                    return True
+    return False
 
-def count_by_extension(result: ScannerResult)->Counter:
-    file_count=Counter()
-    for file in result.files:
-        file_type=file.rel_path.suffix.lower()
-        if file_type=="":
-            file_type="(none)"
-        file_count[file_type]+=1
-    return file_count
+def is_sidecar(name:str,siblings: set[str],patterns: list[str])->bool:
+    if not matches(name,patterns):
+        return False
+    main=os.path.splitext(name)[0]#we split from the name the file type and we only keep the name
+    return name!=main and main in siblings
 
-def count_ignored_by_reason(result: ScannerResult)->Counter:
-    ignore_count=Counter()
-    for file in result.ignored:
-        ignore_count[file[1]]+=1
-    return ignore_count
+def to_relative(file_path, root):
+    file_path = Path(file_path).expanduser().resolve()
+    root = Path(root).expanduser().resolve()
+    return file_path.relative_to(root)
 
-def main():
-    parser=argparse.ArgumentParser(description="Scan folders and report what the file scanner finds")
-    parser.add_argument("roots",nargs="+",type=Path)
-    parser.add_argument("--max-mb",type=int,default=50)
-    args=parser.parse_args()
-    roots=[]
-    for r in args.roots:
-        roots.append(r.expanduser().resolve())
-    config=CorpusConfig(roots=roots,max_file_size_mb=args.max_mb)
-    result=scan(config)
-    print(f"Scanned {len(roots)} roots")
-    print()
-    print_results(result)
-    
-    
-def print_results(result: ScannerResult):
-    total_bytes=0
-    for f in result.files:
-        total_bytes+=f.size
-    print(f"Found {len(result.files)} files ({human_readable_bytes(total_bytes)})")
-    file_count=count_by_extension(result)
-    for file_type,count in file_count.most_common():
-        print(f"{file_type} \t {count}")
-    print()
-    print(f"Ignored files {len(result.ignored)}")
-    ignore_count=count_ignored_by_reason(result)
-    for reason,count in ignore_count.most_common():
-        print(f"{reason} \t {count}")
-
-
-def human_readable_bytes(size: int)->str:
-    num=size
-    unit=["B","KB","MB","GB","TB"]
-    loop_count=0
-    while num>=1024 and loop_count<len(unit)-1:
-        num/=1024
-        loop_count+=1
-    return f"{num:.1f} {unit[loop_count]}"
-
-    
-
-if __name__ == "__main__":
-    main()
+def file_sha256(path: str | Path)->str:
+    hash_temp=hashlib.sha256()
+    with open(path,"rb") as f:
+        n=MB
+        block=f.read(n)
+        while(block!=b""):#we read the binary in blocks so we dont need to load the whole file
+            hash_temp.update(block)
+            block=f.read(n)
+    return hash_temp.hexdigest()
