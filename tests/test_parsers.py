@@ -2448,6 +2448,7 @@ POLYTONIC_CASES = {
     "perispomeni and varia become tonos": ("συμμετρικῆς καλὸς", "συμμετρικής καλός"),
     "iota subscript": ("τῷ ᾳ ῃ", "τώ α η"),
     "capital with breathing and accent": ("Ἄνθρωπος Ὅμηρος", "Άνθρωπος Όμηρος"),
+    "macron and breve (marks of length)": ("ᾱ ῑ ᾰ", "α ι α"),
     "diaeresis stays": ("προϊόν Ϊ ΐ", "προϊόν Ϊ ΐ"),
     "latin accents stay": ("voilà café", "voilà café"),
 }
