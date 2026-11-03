@@ -99,12 +99,13 @@ def run_ingest(args:argparse.Namespace,parser:argparse.ArgumentParser)->None:
             drop_cached(db,None)
     result=scan(config.corpus,load_manifest(db))
     save_manifest(db,result.files)
-    docs=read_files(result.files,config.corpus,config.ocr,db,config.ingest.workers,show_progress)
+    inner_ignored=[]#ignored inside archives
+    docs=read_files(result.files,config.corpus,config.ocr,db,config.ingest.workers,show_progress,inner_ignored)
     print(file=sys.stderr)#ends the progress line
     out=Path(config.ingest.documents)
     out.parent.mkdir(parents=True,exist_ok=True)
     save_jsonl(docs,out)
-    print_summary(docs,result)
+    print_summary(docs,ScannerResult(result.files,result.ignored+inner_ignored))
 
 def ext_of(text:str)->str:
     text=text.lower()
@@ -113,7 +114,7 @@ def ext_of(text:str)->str:
     return text
 
 def show_progress(done:int,total:int)->None:
-    print(f"\rread {done}/{total} files",end="",file=sys.stderr,flush=True)
+    print(f"\r\033[Kread {done}/{total} files",end="",file=sys.stderr,flush=True)
 
 def print_summary(docs:list[Document],result:ScannerResult)->None:
     statuses=Counter()

@@ -476,3 +476,14 @@ def test_no_progress_without_workers(tmp_path):
     calls = []
     docs_of(root, progress=lambda done, total: calls.append((done, total)))
     assert calls == []
+
+
+# what the scanner ignores inside an archive is counted too, with the path of the archive in front (D99)
+def test_read_files_gives_what_was_ignored_inside_archives(tmp_path):
+    root = tmp_path / "corpus"
+    write(root, {"notes.txt": NOTES, "work.zip": zip_bytes({"a.txt": "Α.", "Thumbs.db": "x", ".git/config": "x"})})
+    corpus = CorpusConfig(roots=[root])
+    ignored = []
+    docs = read_files(scan(corpus).files, corpus, ignored=ignored)
+    assert [str(d.file_path) for d in docs] == ["notes.txt", "work.zip/a.txt"]
+    assert sorted((str(p), reason) for p, reason in ignored) == [("work.zip/.git", "ignored_dir"), ("work.zip/Thumbs.db", "ignored_file")]

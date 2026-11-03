@@ -25,10 +25,13 @@ class ReadState:
     workers:int|None=None#count of processes
     skip:set[str]=field(default_factory=set)
     progress:Callable[[int,int],None]|None=None
+    ignored:list[tuple[Path,str]]=field(default_factory=list)#what the scanner ignored inside archives
 
-def read_files(files:list[ScannedFile],corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None,progress:Callable[[int,int],None]|None=None)->list[Document]:
+def read_files(files:list[ScannedFile],corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None,progress:Callable[[int,int],None]|None=None,ignored:list[tuple[Path,str]]|None=None)->list[Document]:
     check_ocr(ocr)
     state=ReadState(corpus,ocr,db,workers,progress=progress)
+    if ignored is not None:#the caller gets what was ignored inside archives in its own list
+        state.ignored=ignored
     for file in files:
         if not is_archive(file.rel_path):
             state.skip.add(file.sha256)#if we see this file again we will skip it
@@ -51,7 +54,10 @@ def read_archive(scanned:ScannedFile,state:ReadState,depth:int=1,budget:Budget|N
     docs=[]
     with tempfile.TemporaryDirectory() as tmp:#creates temp folder to unpack zip
         whole=unpack(scanned.abs_path,Path(tmp),corpus.max_file_size_mb*MB,budget)
-        files=scan(replace(corpus,roots=[Path(tmp)])).files#we scan the temp as corpus
+        result=scan(replace(corpus,roots=[Path(tmp)]))#we scan the temp as corpus
+        files=result.files
+        for path,reason in result.ignored:
+            state.ignored.append((scanned.rel_path/path.relative_to(tmp),reason))
         new_files=[]
         for file in files:
             if file.sha256 not in state.skip:#files outside or in older archives are not read again

@@ -308,3 +308,26 @@ def test_show_before_ingest(tmp_path, capsys):
     assert stop.value.code != 0
     err = capsys.readouterr().err
     assert "invalid choice: 'show'" not in err and "ingest" in err#it says to run the ingest first
+
+
+# the summary counts what was ignored inside archives too, still without names (D99)
+@FORK_WARNING
+def test_ingest_summary_counts_ignored_inside_archives(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root, data, yaml_file = setup(tmp_path, {"notes.txt": NOTES, "Thumbs.db": "x",
+                                             "work.zip": zip_bytes({"a.txt": "Α.", "desktop.ini": "x", ".git/config": "x"})})
+    ingest(yaml_file)
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert "Ignored 3" in lines and "ignored_file 2" in lines and "ignored_dir 1" in lines
+    assert "desktop" not in out and ".git" not in out
+
+
+# the progress line is cleared before it is written again, so a shorter line leaves nothing of a longer one
+@FORK_WARNING
+def test_progress_line_is_cleared(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root, data, yaml_file = setup(tmp_path, {"a.txt": "a", "b.txt": "b"})
+    ingest(yaml_file)
+    err = capsys.readouterr().err
+    assert "\r\x1b[Kread 2/2 files" in err
