@@ -294,7 +294,7 @@ LOOKALIKE_CASES = {
     "lower case word in latin": ("Η άσκηση και o φοιτητής, ο καθηγητής και ο βοηθός.",
                                  "Η άσκηση και ο φοιτητής, ο καθηγητής και ο βοηθός."),
     "greek word only with a capital in the text": ("Η εργασία KAI η άσκηση. Και οι δύο μαζί.", "Η εργασία ΚΑΙ η άσκηση. Και οι δύο μαζί."),
-    "polytonic word": ("Tὸ βιβλίον τῆς βιβλιοθήκης.", "Τὸ βιβλίον τῆς βιβλιοθήκης."),
+    "polytonic word": ("Tὸ βιβλίον τῆς βιβλιοθήκης.", "Τό βιβλίον τής βιβλιοθήκης."),#and monotonic after (D100)
     "ordinal with digits": ("Το 1oς όροφος της σχολής.", "Το 1ος όροφος της σχολής."),
 }
 
@@ -621,3 +621,19 @@ def test_netpbm_images_are_read_with_ocr(tmp_path, name, make):
     make(picture("The deadline is strict."), f)
     doc = parse_one(tmp_path, name, f.read_bytes())
     assert (doc.parse_status, doc.raw_text) == ("ocr", "The deadline is strict.")
+
+
+# lookalikes (D100): a Latin word is made Greek only when the text writes it in Greek at least as often as in Latin.
+# A course code in Latin on every page ("HY150") and once in Greek stays Latin where the OCR read it
+def test_lookalikes_keep_a_word_the_text_writes_in_latin(tmp_path):
+    from test_pdf import scan_pdf, SCAN
+    from test_parsers import parse_one
+    import test_pdf
+    pages = [[(0.2, 0.3, "<p>Course HY150 Programming. HY150 Lecture 1.</p>")],
+             [(0.2, 0.3, "<p>Το μάθημα ΗΥ150 του προγράμματος. HY150 Lecture 2.</p>")],
+             [(0.2, 0.5, SCAN)]]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ocr_module, "ocr_image", lambda image, ocr: ("Thank you HY 150 Programming.", 95.0))
+        scan_pdf(tmp_path, pages)
+        doc = parse_one(tmp_path, "slides.pdf", (tmp_path / "scan.pdf").read_bytes())
+    assert doc.raw_text.endswith("Thank you HY 150 Programming.")

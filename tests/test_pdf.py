@@ -463,6 +463,8 @@ def scan_pdf(tmp_path, pages, size=PORTRAIT, toc=None, ocr=None):
 
 # a fixed answer of the OCR, so that only the choices of read_pdf are tested; it keeps what it got
 FOUND = ("Το κείμενο που βρήκε το OCR στη σελίδα.", 95.0)
+FOUND_PAGE = ("Το κείμενο που βρήκε το OCR σε μια σελίδα που σκαναρίστηκε ολόκληρη, με πολλές προτάσεις "
+              "και αρκετές λέξεις, πολύ περισσότερες από τη σύντομη λεζάντα που είχε η σελίδα.", 95.0)
 
 
 @pytest.fixture
@@ -497,7 +499,7 @@ OCR_PAGE_CASES = {
                                        ("Κείμενο της σελίδας με αρκετές λέξεις. " * 2 + "Κείμενο της σελίδας με αρκετές λέξεις.", False)),
     "little text and no picture: no OCR": (
         [[(0.2, 0.3, "<p>Μια σύντομη σελίδα χωρίς εικόνες.</p>")]], PORTRAIT, FOUND, ("Μια σύντομη σελίδα χωρίς εικόνες.", False)),
-    "49 characters and a picture: OCR": ([[(0.2, 0.3, f"<p>{TEXT_49}</p>"), (0.6, 0.7, LOGO)]], PORTRAIT, FOUND, (FOUND[0], True)),
+    "49 characters and a picture: OCR": ([[(0.2, 0.3, f"<p>{TEXT_49}</p>"), (0.6, 0.7, LOGO)]], PORTRAIT, FOUND_PAGE, (FOUND_PAGE[0], True)),
     "50 characters and a picture: no OCR": ([[(0.2, 0.3, f"<p>{TEXT_50}</p>"), (0.6, 0.7, LOGO)]], PORTRAIT, FOUND, (TEXT_50, False)),
     "a table counts as text: no OCR": ([[(0.1, 0.5, CLASS), (0.7, 0.8, LOGO)]], PORTRAIT, FOUND, (CLASS_TEXT, False)),
     "sure but too short: not kept": ([[(0.2, 0.5, SCAN)]], PORTRAIT, ("ΟΚ", 95.0), ("", False)),
@@ -1029,3 +1031,26 @@ def test_read_pdf_prints_nothing(tmp_path):
 def test_mupdf_errors_are_not_shown():
     import rag_fs.ingest.parsers.pdf  # noqa: F401 (the setting is made when the reader is imported)
     assert pymupdf.TOOLS.mupdf_display_errors() is False
+
+
+# a page with a little real text (a closing slide) keeps it: the OCR replaces the text of a page only when it
+# reads clearly more (twice as much), like a scan with a short watermark (D100)
+def test_read_pdf_keeps_short_text_when_ocr_reads_no_more(tmp_path, fake_ocr):
+    fake_ocr["answer"] = ("[hank youl", 95.0)
+    text, used = scan_pdf(tmp_path, [[(0.2, 0.3, "<p>Thank you!</p>"), (0.4, 0.6, LOGO)]])
+    assert (text, used) == ("Thank you!", False)
+
+
+# and the OCR still wins when it reads much more than the page had
+def test_read_pdf_ocr_wins_when_it_reads_more(tmp_path, fake_ocr):
+    fake_ocr["answer"] = ("Η σελίδα που σκαναρίστηκε έχει πολύ περισσότερο κείμενο από το μικρό σημείωμα.", 95.0)
+    text, used = scan_pdf(tmp_path, [[(0.05, 0.1, "<p>Σημείωμα</p>"), (0.2, 0.6, SCAN)]])
+    assert used and "πολύ περισσότερο κείμενο" in text
+
+
+# a bookmark that is not found on its page goes after the heading of the bookmark before it on the same page,
+# at the end of the page, so the headings keep the order of the bookmarks (D100)
+def test_bookmark_not_found_after_a_found_one_keeps_the_order(tmp_path):
+    pages = ["<p>Επισκόπηση</p><p>Κείμενο της ενότητας.</p>"]
+    toc = [[1, "Επισκόπηση", 1], [2, "Λεπτομέρειες που δεν φαίνονται", 1]]
+    assert toc_pdf(tmp_path, pages, toc) == "# Επισκόπηση\n\nΚείμενο της ενότητας.\n\n## Λεπτομέρειες που δεν φαίνονται"

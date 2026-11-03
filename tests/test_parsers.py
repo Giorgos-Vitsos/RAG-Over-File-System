@@ -262,10 +262,10 @@ MIXED_GREEK_ENGLISH = [
     encoded("Πήγα στην Άρτα και μετά στην Αθήνα με τα παιδιά μου.", "iso8859_7"),
     encoded("Παράγραφος ¶ 3 του κανονισμού σπουδών.", "cp1253"),
     pytest.param("¶Ενότητα 3".encode(), "¶Ενότητα 3", id="utf-8 with a pilcrow before greek"),
-    pytest.param("αβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\ufffd", id="utf-8 with one bad byte in ten greek letters"),
+    pytest.param("αβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\u201c", id="utf-8 with one windows quote in ten greek letters"),#D100
     pytest.param(b"Hello \x93world\x94", "Hello \u201cworld\u201d", id="english with windows quotes"),
     pytest.param(ENGLISH_THEN_GREEK.encode("cp1253"), ENGLISH_THEN_GREEK, id="cp1253: long english, one greek sentence"),
-    pytest.param("\ufeffαβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\ufffd", id="BOM and one bad byte"),
+    pytest.param("\ufeffαβγδεζηθικ".encode() + b"\x93", "αβγδεζηθικ\u201c", id="BOM and one windows quote"),#D100
     pytest.param("\ufeffΓεια σου".encode("utf-8"), "Γεια σου", id="BOM removed"),
     pytest.param(b"", "", id="empty file"),
     pytest.param(b"a\r\nb", "a\r\nb", id="line endings kept (parse_file normalizes them)"),
@@ -2437,3 +2437,38 @@ def test_unknown_binary_is_not_a_warning(tmp_path, caplog):
 def test_models_and_icons_are_binary(tmp_path, name):
     doc = parse_one(tmp_path, name, b"v 0.0 1.0 2.0\nv 1.0 2.0 3.0\nf 1 2 3\n")
     assert (doc.parse_status, doc.content_type, doc.raw_text) == ("unsupported", "binary", "")
+
+
+# fixes from looking at the corpus by eye (D100, 03/11)
+
+# the OCR of Greek writes polytonic letters (breathings, perispomeni, iota subscript): they become the monotonic
+# letters people search with. Diaeresis and Latin accents stay
+POLYTONIC_CASES = {
+    "breathings": ("Ἑστώ ἡ μέθοδος ἐν", "Εστώ η μέθοδος εν"),
+    "perispomeni and varia become tonos": ("συμμετρικῆς καλὸς", "συμμετρικής καλός"),
+    "iota subscript": ("τῷ ᾳ ῃ", "τώ α η"),
+    "capital with breathing and accent": ("Ἄνθρωπος Ὅμηρος", "Άνθρωπος Όμηρος"),
+    "diaeresis stays": ("προϊόν Ϊ ΐ", "προϊόν Ϊ ΐ"),
+    "latin accents stay": ("voilà café", "voilà café"),
+}
+
+
+@pytest.mark.parametrize("written, expected", POLYTONIC_CASES.values(), ids=POLYTONIC_CASES.keys())
+def test_parse_file_polytonic_to_monotonic(tmp_path, written, expected):
+    assert parse_one(tmp_path, "notes.txt", written.encode()).raw_text == expected
+
+
+# a few Windows-1252 bytes inside a UTF-8 file (text pasted from Word): quotes and dashes are read as they were meant,
+# not as replacement characters. Bytes that could be Greek or Latin letters stay unknown
+@pytest.mark.parametrize("data, expected", [
+    ("Σημειώσεις για την εξέταση. ".encode() + b"top can\x92t point" + " και τα θέματα.".encode(),
+     "Σημειώσεις για την εξέταση. top can\u2019t point και τα θέματα."),
+    ("Η άσκηση ".encode() + b"\x93quote\x94 \x96 dash" + " και οι λύσεις του μαθήματος.".encode(),
+     "Η άσκηση \u201cquote\u201d \u2013 dash και οι λύσεις του μαθήματος."),
+    ("Η άσκηση και οι λύσεις του μαθήματος ".encode() + b"\xe1" + " εδώ.".encode(),
+     "Η άσκηση και οι λύσεις του μαθήματος \ufffd εδώ."),
+], ids=["apostrophe", "quotes and dash", "a letter byte stays unknown"])
+def test_read_text_windows_bytes_in_utf8(tmp_path, data, expected):
+    f = tmp_path / "mixed.txt"
+    f.write_bytes(data)
+    assert read_text(f) == expected

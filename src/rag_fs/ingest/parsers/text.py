@@ -1,5 +1,6 @@
 from pathlib import Path
 from charset_normalizer import from_bytes
+import codecs
 import re
 import unicodedata
 
@@ -7,6 +8,9 @@ FALLBACK_ENCODINGS=["cp1253", "iso8859_7", "cp1252", "latin_1", "utf_16"]
 VALID_THRESHOLD=10
 GREEK="\u0370-\u03ff\u1f00-\u1fff"#greek letters with the polytonic ones
 WORD=re.compile(r"\w+")
+LETTERS=re.compile(r"[^\W\d_]+")#words without digits
+POLYTONIC_DROP={chr(0x313),chr(0x314),chr(0x345)}#we drop thos ancinet greek symbols
+POLYTONIC_TONOS={chr(0x300),chr(0x342)}
 GREEK_AFTER_PILCROW=re.compile(f"\u00b6[{GREEK}]")
 ACCENT_START=re.compile(r"[\u0384\u00b4][ΑΕΗΙΟΥΩ]")#greek characters with accents that break
 CP1252_SIGNS="".join(bytes([b]).decode("cp1252") for b in range(0x80,0xa0) if b not in (0x81,0x8d,0x8f,0x90,0x9d))
@@ -30,9 +34,28 @@ def read_text(path: Path)->str:
             text=str(best)
             if best.encoding=="cp1253" and GREEK_AFTER_PILCROW.search(text):#edge case where ¶ was replacing capital Α
                 text=data.decode("iso8859_7",errors="replace")
+        else:
+            text=utf8_with_windows(data)
     if "\x00" in text:#we check for NULL byte
         raise ValueError(f"{path} is not a text file")
     return text
+
+def utf8_with_windows(data:bytes)->str:
+    data=data.removeprefix(codecs.BOM_UTF8)
+    parts=[]
+    while True:#reads everything and tries different encodings per blocks
+        try:
+            parts.append(data.decode("utf-8"))
+            break
+        except UnicodeDecodeError as e:#e.start and e.end where the broken bytes are
+            parts.append(data[:e.start].decode("utf-8"))#this was correct
+            for byte in data[e.start:e.end]:
+                if 0x80<=byte<=0x9f:#symbols that are the same in different encodings
+                    parts.append(bytes([byte]).decode("cp1252",errors="replace"))
+                else:#we dont know the encoding
+                    parts.append(chr(0xfffd))
+            data=data[e.end:]
+    return "".join(parts)
 
 def unify_newlines(text:str)->str:
     return text.replace("\r\n","\n").replace("\r","\n")
@@ -41,7 +64,23 @@ def normalize(text:str)->str:
     text=fix_mojibake(text)
     text=ACCENT_START.sub(lambda match: unicodedata.normalize("NFC",match.group(0)[-1]+"\u0301"),text)
     text=unicodedata.normalize("NFKC",text)
+    text=monotonic(text)
     return text
+
+def monotonic(text:str)->str:
+    letters=[]
+    for c in text:
+        if chr(0x1f00)<=c<=chr(0x1fff) and c.isalpha():
+            marks=[]
+            for part in unicodedata.normalize("NFD",c):#the letter and its accents in pieces
+                if part in POLYTONIC_DROP:
+                    continue
+                if part in POLYTONIC_TONOS:
+                    part=chr(0x301)
+                marks.append(part)
+            c=unicodedata.normalize("NFC","".join(marks))#we join only the ones we actualy want
+        letters.append(c)
+    return "".join(letters)
 
 def fix_mojibake(text:str)->str:
     return MOJIBAKE.sub(lambda match: fix_mojibake_run(match.group(0)),text)

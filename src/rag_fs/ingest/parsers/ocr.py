@@ -3,7 +3,8 @@ from pathlib import Path
 import pytesseract
 from PIL import Image, ImageOps
 from .pages import drop_repeated_edges,fix_text_block,get_words,join_broken_pages
-from .text import WORD,is_greek
+from collections import Counter
+from .text import LETTERS,WORD,is_greek
 import os
 
 os.environ.setdefault("OMP_THREAD_LIMIT","1")
@@ -21,7 +22,7 @@ def read_image(path:Path,ocr:OCRConfig)->tuple[str,bool]:
     if not paragraphs:
         return "",False
     text="\n\n".join(paragraphs)
-    return fix_lookalikes(text,greek_words(text)),True
+    return fix_lookalikes(text,word_counts(text)),True
 
 def frame_candidates(path:Path,img:Image.Image,ocr:OCRConfig)->list[int]:#the frames big enough for ocr
     if path.suffix.lower() in (".tif", ".tiff"):
@@ -154,23 +155,23 @@ def check_ocr(ocr: OCRConfig):
     else:
         raise ValueError("OCR has none installed languages")
 
-def greek_words(text:str)->set[str]:#the words with a greek letter, to know how the text writes them
-    words=set()
-    for w in WORD.findall(text):
-        w=w.lower()
-        if any(is_greek(c) for c in w):
-            words.add(w)
-    return words
+def word_counts(text:str)->Counter:
+    return Counter(w.lower() for w in LETTERS.findall(text))
 
-def fix_lookalikes(text:str,words:set[str])->str:
-    return WORD.sub(lambda match: fix_word(match.group(0),words),text)#fixes greek words broken from ocr
+def fix_lookalikes(text:str,greek:Counter,latin:Counter|None=None)->str:
+    if latin is None:
+        latin=Counter()
+    return WORD.sub(lambda match: fix_word(match.group(0),greek,latin),text)#fixes greek words broken from ocr
 
-def fix_word(word:str,words:set[str])->str:
+def fix_word(word:str,greek:Counter,latin:Counter)->str:
     has_greek_char=False
     for c in word:
         if is_greek(c):
             has_greek_char=True
-    greek=word.translate(LOOKALIKE)
-    if greek.lower() in words or has_greek_char:
-        return greek
+    greek_word=word.translate(LOOKALIKE)
+    if has_greek_char:#a greek word with a latin letter inside
+        return greek_word
+    count=greek[greek_word.lower()]
+    if count>0 and count>=latin[word.lower()]:#the text writes it in greek at least as often as in latin
+        return greek_word
     return word

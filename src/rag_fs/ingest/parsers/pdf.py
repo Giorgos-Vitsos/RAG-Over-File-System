@@ -2,7 +2,7 @@ from pathlib import Path
 import pymupdf
 from .tables import format_rows
 from .pages import block_texts,count_edges,drop_repeated_edges,edge_key,fix_text_block,get_words,join_broken_pages
-from .ocr import fix_lookalikes,greek_words,ocr_sample,run_ocr
+from .ocr import fix_lookalikes,ocr_sample,run_ocr,word_counts
 from .text import WORD,count_chars,fix_suspicious_text
 from PIL import Image
 from rag_fs.config import OCRConfig
@@ -14,6 +14,7 @@ EDGE=0.12#the top and bottom part of a page
 TABLE_START=0.15#if a table starts here it might be cut
 TABLE_END=0.85#if a table ends here it might be cut
 CHAR_COUNT_OCR_FLAG=50
+OCR_MORE=2#ocr replaces if text is this time more than normal parser
 SUSPICIOUS_WORD_RATIO=0.2
 CONTROL_CHAR_RATIO_FILTER=0.2#if we have more than that then the text is probably broken
 
@@ -71,6 +72,9 @@ def ocr_pages(file,pages:list[list[tuple[str,list[list[str]]|None]]],ocr:OCRConf
             text_ocr=run_ocr(image,ocr)
             if text_ocr is None:
                 continue
+            page_chars=useful_chars(pages[index])
+            if 0<page_chars<CHAR_COUNT_OCR_FLAG and useful_chars([(text_ocr,None)])<=OCR_MORE*page_chars:#a short page keeps its own text
+                continue
             new_blocks=[]
             for block in text_ocr.split("\n\n"):
                 new_blocks.append((block,None))
@@ -78,6 +82,14 @@ def ocr_pages(file,pages:list[list[tuple[str,list[list[str]]|None]]],ocr:OCRConf
             scanned.append(index)
     scanned.sort()
     return scanned
+
+def useful_chars(blocks:list[tuple[str,list[list[str]]|None]])->int:#actual chars and not whitespace or control
+    count=0
+    for text,rows in blocks:
+        for part in block_texts(text,rows):
+            whitespace,control=count_chars(part)
+            count+=len(part)-whitespace-control
+    return count
 
 def needs_ocr(page,blocks:list[tuple[str,list[list[str]]|None]])->bool:#little text and a picture, or broken text
     char_count=0
@@ -161,10 +173,15 @@ def pages_text(pages:list[list[tuple[str,list[list[str]]|None]]],slides:bool,tit
                 else:#we appanded table
                     last_was_text=False
     if scanned:#latin letters that look greek, only in what the ocr read
-        lookalike_words=greek_words("\n\n".join(output))
+        greek=word_counts("\n\n".join(output))
+        latin_text=[]
+        for i in range(len(output)):
+            if not from_ocr[i]:
+                latin_text.append(output[i])
+        latin=word_counts("\n\n".join(latin_text))#how the real text of the pdf writes its words
         for i in range(len(output)):
             if from_ocr[i]:
-                output[i]=fix_lookalikes(output[i],lookalike_words)
+                output[i]=fix_lookalikes(output[i],greek,latin)
     return "\n\n".join(output)
 
 def is_slides(file)->bool:
@@ -281,6 +298,7 @@ def merging_cell(pos:tuple[int,int],boxes,rows:list[list[str]])->str:
 def add_headings(pages:list[list[tuple[str,list[list[str]]|None]]],bookmarks:list,slides:bool)->dict[int,str]:
     titles={}
     on_top=[0]*len(pages)#for multiple bookmarks in the same page
+    found_before=[False]*len(pages)#a bookmark of the page was found in its text
     for level,title,page in bookmarks:
         page_index=page-1#-1 because bookmark counts from 1 and not 0
         title=" ".join(title.split())
@@ -298,10 +316,15 @@ def add_headings(pages:list[list[tuple[str,list[list[str]]|None]]],bookmarks:lis
                     del blocks[index]
             titles[page_index]=title
         elif found is None:
-            blocks.insert(on_top[page_index],("#"*min(level,6)+" "+title,None))#6 is the max depth
-            on_top[page_index]+=1
+            heading=("#"*min(level,6)+" "+title,None)#6 is the max depth
+            if found_before[page_index]:#if we already have a heading
+                blocks.append(heading)
+            else:
+                blocks.insert(on_top[page_index],heading)
+                on_top[page_index]+=1
         else:
             index,written,rest=found
+            found_before[page_index]=True
             blocks[index]=("#"*min(level,6)+" "+written,None)
             if rest:
                 blocks.insert(index+1,(rest,None))
