@@ -56,9 +56,14 @@ def md_blocks(tokens)->list[str]:
             text=format_rows(rows)
             if text:
                 blocks.append(text)
-        elif current_token.type in ("fence","code_block"):
+        elif current_token.type in ("fence","code_block"):#code inside this block
             if current_token.content.strip():
-                blocks.append(current_token.content.rstrip("\n"))
+                token_info=current_token.info.split()
+                language=""
+                if token_info:
+                    language=token_info[0]
+                code_block="```"+language+"\n"+current_token.content.rstrip("\n")+"\n```"
+                blocks.append(code_block)
         elif current_token.type=="html_block":
             text=clean_lines(BeautifulSoup(BREAK_TAG.sub("\n",current_token.content),"html.parser").get_text())
             if text:

@@ -190,26 +190,7 @@ PANDAS_PLAIN = "   Όνομα  Βαθμός\n0  Μαρία       9\n1  Νίκο�
 
 # (cells, text)
 NOTEBOOK_CASES = {
-    "cells in order and the output after its code": (
-        [markdown("# Εργασία 1\nΔιαβάζουμε τα **δεδομένα**."), code("x = 1 + 1\nprint(x)", stream("2\n")),
-         markdown("Το αποτέλεσμα είναι σωστό.")],
-        "# Εργασία 1\n\nΔιαβάζουμε τα δεδομένα.\n\nx = 1 + 1\nprint(x)\n\n2\n\nΤο αποτέλεσμα είναι σωστό."),
-    "code keeps its lines and spaces": (
-        [code("def f(x):\n    if x:\n        return 1\n")], "def f(x):\n    if x:\n        return 1"),
-    "code that starts with spaces keeps them": ([code("    return x\n")], "    return x"),
-    "result as text": ([code("acc", result({"text/plain": "Ακρίβεια: 0.93"}))], "acc\n\nΑκρίβεια: 0.93"),
-    "pandas table from its html, not twice": (
-        [code("df", result({"text/html": PANDAS, "text/plain": PANDAS_PLAIN}))],
-        "df\n\ncol1: 0; Όνομα: Μαρία; Βαθμός: 9\ncol1: 1; Όνομα: Νίκος; Βαθμός: 7"),
-    "no warnings, errors or pictures": (
-        [code("plot()", stream("FutureWarning: old\n", "stderr"),
-              {"output_type": "error", "ename": "ValueError", "evalue": "κακό", "traceback": ["Traceback"]},
-              result({"image/png": "iVBORw0KGgo=", "text/plain": "<Figure size 640x480 with 1 Axes>"}, "display_data"))],
-        "plot()"),
-    "display of text": ([code("show()", result({"text/plain": "Τέλος εκπαίδευσης"}, "display_data"))],
-                        "show()\n\nΤέλος εκπαίδευσης"),
-    "widget of html without text": (
-        [code("w", result({"text/html": "<div id='w'></div><script>render()</script>", "text/plain": "HBox(children=())"}))], "w"),
+    "code of only spaces gives nothing": ([markdown("Κείμενο"), code("  \n\n")], "Κείμενο"),
     "raw cell and empty cells": (
         [{"cell_type": "raw", "metadata": {}, "source": "Κείμενο raw."}, markdown(""), code("")], "Κείμενο raw."),
     "source as one string or as lines": (
@@ -221,6 +202,40 @@ NOTEBOOK_CASES = {
 
 @pytest.mark.parametrize("cells, expected", NOTEBOOK_CASES.values(), ids=NOTEBOOK_CASES.keys())
 def test_parse_file_notebook(tmp_path, cells, expected):
+    doc = parse_one(tmp_path, "lab.ipynb", notebook(*cells))
+    assert (doc.parse_status, doc.content_type, doc.raw_text) == ("ok", "prose", expected)
+
+
+# code cells are written between ``` lines, so the chunker can tell a # comment from a heading (D105)
+# (cells, text)
+NOTEBOOK_FENCE_CASES = {
+    "cells in order and the output after its code": (
+        [markdown("# Εργασία 1\nΔιαβάζουμε τα **δεδομένα**."), code("x = 1 + 1\nprint(x)", stream("2\n")),
+         markdown("Το αποτέλεσμα είναι σωστό.")],
+        "# Εργασία 1\n\nΔιαβάζουμε τα δεδομένα.\n\n```\nx = 1 + 1\nprint(x)\n```\n\n2\n\nΤο αποτέλεσμα είναι σωστό."),
+    "comment in a code cell": ([markdown("# Εργασία"), code("# φόρτωση\nx = 1")], "# Εργασία\n\n```\n# φόρτωση\nx = 1\n```"),
+    "code keeps its lines and spaces": (
+        [code("def f(x):\n    if x:\n        return 1\n")], "```\ndef f(x):\n    if x:\n        return 1\n```"),
+    "code that starts with spaces keeps them": ([code("    return x\n")], "```\n    return x\n```"),
+    "result as text": ([code("acc", result({"text/plain": "Ακρίβεια: 0.93"}))], "```\nacc\n```\n\nΑκρίβεια: 0.93"),
+    "pandas table from its html, not twice": (
+        [code("df", result({"text/html": PANDAS, "text/plain": PANDAS_PLAIN}))],
+        "```\ndf\n```\n\ncol1: 0; Όνομα: Μαρία; Βαθμός: 9\ncol1: 1; Όνομα: Νίκος; Βαθμός: 7"),
+    "no warnings, errors or pictures": (
+        [code("plot()", stream("FutureWarning: old\n", "stderr"),
+              {"output_type": "error", "ename": "ValueError", "evalue": "κακό", "traceback": ["Traceback"]},
+              result({"image/png": "iVBORw0KGgo=", "text/plain": "<Figure size 640x480 with 1 Axes>"}, "display_data"))],
+        "```\nplot()\n```"),
+    "display of text": ([code("show()", result({"text/plain": "Τέλος εκπαίδευσης"}, "display_data"))],
+                        "```\nshow()\n```\n\nΤέλος εκπαίδευσης"),
+    "widget of html without text": (
+        [code("w", result({"text/html": "<div id='w'></div><script>render()</script>", "text/plain": "HBox(children=())"}))],
+        "```\nw\n```"),
+}
+
+
+@pytest.mark.parametrize("cells, expected", NOTEBOOK_FENCE_CASES.values(), ids=NOTEBOOK_FENCE_CASES.keys())
+def test_parse_file_notebook_code_between_fences(tmp_path, cells, expected):
     doc = parse_one(tmp_path, "lab.ipynb", notebook(*cells))
     assert (doc.parse_status, doc.content_type, doc.raw_text) == ("ok", "prose", expected)
 

@@ -64,9 +64,8 @@ MD_CASES = {
                                       "Όνομα: Μαρία; Σελίδα: site (https://x.gr) / παλιά"),
     "table inside a list": ("- Βαθμοί:\n\n  | Όνομα | Βαθμός |\n  |---|---|\n  | Μαρία | 9 |",
                             "Βαθμοί:\n\nΌνομα: Μαρία; Βαθμός: 9"),
-    "code block is kept as it is": ("```python\ndef f(x):\n    return x  # **όχι** έντονα\n```",
-                                    "def f(x):\n    return x  # **όχι** έντονα"),
-    "indented code block": ("Κείμενο\n\n    x = 1\n        y = 2", "Κείμενο\n\nx = 1\n    y = 2"),
+    "empty code block gives nothing": ("α\n\n```\n```", "α"),
+    "empty code block with a language gives nothing": ("α\n\n```python\n\n```", "α"),
     "html block": ("<div>κείμενο <b>σε</b> html</div>", "κείμενο σε html"),
     "horizontal rule": ("α\n\n---\n\nβ", "α\n\nβ"),
     "google table of contents": ("[Σύνδεσμοι\t1](#σύνδεσμοι)\n\n[**Ασκήσεις\t1**](#ασκήσεις)\n\nΚείμενο", "Κείμενο"),
@@ -95,6 +94,25 @@ MD_CASES = {
 # every part of markdown
 @pytest.mark.parametrize("source, expected", MD_CASES.values(), ids=MD_CASES.keys())
 def test_read_markdown(tmp_path, source, expected):
+    assert read_md(tmp_path, source) == expected
+
+
+# code is written between ``` lines, so the chunker can tell a # comment from a heading (D105)
+# (markdown source, text)
+FENCE_CASES = {
+    "code block is kept between fences": ("```python\ndef f(x):\n    return x  # **όχι** έντονα\n```",
+                                          "```python\ndef f(x):\n    return x  # **όχι** έντονα\n```"),
+    "code without a language": ("```\nx = 1\n```", "```\nx = 1\n```"),
+    "indented code block": ("Κείμενο\n\n    x = 1\n        y = 2", "Κείμενο\n\n```\nx = 1\n    y = 2\n```"),
+    "comment in code stays inside the fences": ("# Τίτλος\n\n```python\n# φόρτωση\nx = 1\n```",
+                                                "# Τίτλος\n\n```python\n# φόρτωση\nx = 1\n```"),
+    "tilde fence becomes backticks": ("~~~\nx = 1\n~~~", "```\nx = 1\n```"),
+    "only the language from the info line": ('```python title="a.py"\nx = 1\n```', "```python\nx = 1\n```"),
+}
+
+
+@pytest.mark.parametrize("source, expected", FENCE_CASES.values(), ids=FENCE_CASES.keys())
+def test_read_markdown_code_between_fences(tmp_path, source, expected):
     assert read_md(tmp_path, source) == expected
 
 

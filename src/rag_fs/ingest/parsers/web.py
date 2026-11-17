@@ -160,6 +160,8 @@ def cell_blocks(cell:dict)->list[str]:
         text=markdown_text(source)
     elif kind=="code":
         text=source.strip("\n")#code keeps its spaces
+        if text.strip():
+            text="```\n"+text+"\n```"
     else:
         text=source.strip()
     blocks=[]
