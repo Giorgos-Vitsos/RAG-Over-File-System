@@ -2,6 +2,7 @@ import re
 
 HEADING=re.compile(r"(#{1,6}) (.*)")
 FENCE="```"#code block
+WORD=re.compile(r"\S+")
 
 def trimmed(text:str,start:int,end:int)->tuple[int,int]:#removes whitespace and gets a part of the raw text
     while start<end and text[start].isspace():
@@ -41,3 +42,23 @@ def split_sections(text:str)->list[tuple[int,int,str]]:
         position+=len(line)+1
     add_section(sections,text,start,len(text),title)
     return sections
+
+def split_windows(text, start, end, words:int, overlap) -> list[tuple[int,int]]:
+    if words<1 or overlap<0:
+        raise ValueError(f"Values words and overlap should not be negative current: {words}, {overlap}")
+    step=words-round(words*overlap)
+    if step<1:
+        raise ValueError(f"Chunking step has invalid value of {step}, the overlap {overlap} consumes the whole window")
+    found_words=[]
+    for match in WORD.finditer(text,start,end):
+        found_words.append((match.start(),match.end()))
+    windows=[]
+    first_index=0
+    while first_index<len(found_words):
+        last=min(first_index+words,len(found_words))-1#in case the last chunk doesnt have enough words
+        windows.append((found_words[first_index][0],found_words[last][1]))
+        if first_index+words>=len(found_words):#last word
+            break
+        first_index+=step
+    return windows
+
