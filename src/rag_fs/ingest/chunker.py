@@ -80,6 +80,38 @@ def chunk_doc(doc:Document,config:ChunkingConfig)->list[Chunk]:
         return [make_chunk(doc,0,0,"",config.strategy)]
     chunks=[]
     for start,end,title in split_sections(doc.raw_text):
-        for window_s,window_e in split_windows(doc.raw_text,start,end,config.narrative_words,config.overlap):
-            chunks.append(make_chunk(doc,window_s,window_e,title,config.strategy))
+        if doc.content_type=="tabular":#we cut tables
+            pieces=split_rows(doc.raw_text,start,end,config.tabular_rows,config.narrative_words)
+        else:
+            pieces=split_windows(doc.raw_text,start,end,config.narrative_words,config.overlap)
+        for piece_s,piece_e in pieces:
+            chunks.append(make_chunk(doc,piece_s,piece_e,title,config.strategy))
     return chunks
+
+def split_rows(text:str, start:int, end:int, rows:int, words:int) -> list[tuple[int,int]]:
+    if rows<1 or words<1:
+        raise ValueError(f"Split rows couldnt work because it needs values of at least 1, current: {rows}, {words}")
+    groups=[]
+    group_s=0
+    group_e=0
+    group_rows=0#
+    group_words=0#
+    position=start#line
+    for line in text[start:end].split("\n"):
+        line_s,line_e=trimmed(text,position,position+len(line))
+        position+=len(line)+1
+        if line_s==line_e:#empty line is not a row
+            continue
+        line_words=len(text[line_s:line_e].split())
+        if group_rows>0 and (group_rows==rows or group_words+line_words>words):#full group we close it
+            groups.append((group_s,group_e))
+            group_rows=0
+            group_words=0
+        if group_rows==0:#new group starts with this line
+            group_s=line_s
+        group_e=line_e
+        group_rows+=1
+        group_words+=line_words
+    if group_rows>0:#the last group
+        groups.append((group_s,group_e))
+    return groups

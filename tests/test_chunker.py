@@ -3,7 +3,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 from rag_fs.config import ChunkingConfig
-from rag_fs.ingest.chunker import chunk_doc, make_chunk, split_sections, split_windows
+from rag_fs.ingest.chunker import chunk_doc, make_chunk, split_rows, split_sections, split_windows
 from rag_fs.models import Chunk, Document
 
 
@@ -270,3 +270,117 @@ def test_chunk_doc_points_to_the_text(text):
         assert (c.file_path, c.content_type, c.chunk_strategy) == (Path("notes/os.md"), "prose", "content_aware")
         if i > 0:
             assert found[i - 1].char_start < c.char_start
+
+
+# K4: tables are cut into groups of whole rows, at most `rows` rows and at most `words` words (D111)
+
+
+def row_groups(text, rows, words, start=0, end=None):
+    if end is None:
+        end = len(text)
+    return [text[s:e] for s, e in split_rows(text, start, end, rows, words)]
+
+
+# (text, rows, words, [text of each group])
+ROW_CASES = {
+    "empty text has no groups": ("", 20, 400, []),
+    "only spaces and new lines has no groups": (" \n\n\t\n", 20, 400, []),
+    "fewer rows than the limit is one group": ("a: 1\nb: 2", 20, 400, ["a: 1\nb: 2"]),
+    "exactly the limit is one group": ("a\nb", 2, 400, ["a\nb"]),
+    "one row more starts a new group": ("a\nb\nc", 2, 400, ["a\nb", "c"]),
+    "groups do not overlap": ("a\nb\nc\nd\ne", 2, 400, ["a\nb", "c\nd", "e"]),
+    "the word limit closes a group": ("α β\nγ δ\nε ζ", 20, 4, ["α β\nγ δ", "ε ζ"]),
+    "a row longer than the word limit is a group of its own and is not cut": (
+        "α\nβ γ δ ε\nζ", 20, 3, ["α", "β γ δ ε", "ζ"]),
+    "a first row longer than the word limit": ("α β γ δ\nε", 20, 3, ["α β γ δ", "ε"]),
+    "empty lines are not rows": ("a\n\n\nb\n  \nc", 2, 400, ["a\n\n\nb", "c"]),
+    "spaces around the group are left out": ("  a: 1  \n b: 2 \n", 20, 400, ["a: 1  \n b: 2"]),
+    "the sheet heading counts as a row": ("# Sheet: Α\nx: 1\ny: 2", 2, 400, ["# Sheet: Α\nx: 1", "y: 2"]),
+    "only \\n breaks a row": ("a\x0cb\nc", 1, 400, ["a\x0cb", "c"]),
+    "a row of one word": ("a\nb", 1, 1, ["a", "b"]),
+}
+
+
+@pytest.mark.parametrize("text, rows, words, expected", ROW_CASES.values(), ids=ROW_CASES.keys())
+def test_split_rows(text, rows, words, expected):
+    assert row_groups(text, rows, words) == expected
+
+
+# offsets are positions in the whole text, not in the section
+def test_split_rows_inside_a_range():
+    text = "πριν\nα: 1\nβ: 2\nμετά"
+    start, end = text.index("α"), text.index("\nμετά")
+    assert row_groups(text, 1, 400, start, end) == ["α: 1", "β: 2"]
+
+
+@pytest.mark.parametrize("rows, words", [(0, 400), (-1, 400), (20, 0), (20, -5)],
+                         ids=["no rows", "negative rows", "no words", "negative words"])
+def test_split_rows_rejects_bad_settings(rows, words):
+    with pytest.raises(ValueError):
+        row_groups("a\nb", rows, words)
+
+
+TABLE = "\n".join(f"Όνομα: φοιτητής{i}; Βαθμός: {i % 10}" + "; Σχόλιο: πολύ καλή δουλειά" * (i % 7)
+                  + ("\n" if i % 11 == 0 else "") for i in range(300))
+
+
+# for every setting: the groups are in order, do not overlap, keep whole rows, keep the limits
+# (a single long row may pass the word limit), hold every row once, and a group closes only
+# when the next row would break a limit
+@pytest.mark.parametrize("rows, words", [(20, 400), (20, 30), (5, 1000), (1, 400), (50, 8), (10, 3)])
+def test_split_rows_keeps_whole_rows(rows, words):
+    found = split_rows(TABLE, 0, len(TABLE), rows, words)
+    groups = [[line.strip() for line in TABLE[s:e].split("\n") if line.strip()] for s, e in found]
+    assert [line for group in groups for line in group] == [line.strip() for line in TABLE.split("\n") if line.strip()]
+    for i, (start, end) in enumerate(found):
+        piece = TABLE[start:end]
+        assert piece == piece.strip() and piece
+        assert start == 0 or TABLE[start - 1] == "\n"
+        assert end == len(TABLE) or TABLE[end] == "\n"
+        size = sum(len(line.split()) for line in groups[i])
+        assert len(groups[i]) <= rows
+        assert size <= words or len(groups[i]) == 1
+        if i > 0:
+            assert found[i - 1][1] < start
+            last = groups[i - 1]
+            assert len(last) == rows or sum(len(line.split()) for line in last) + len(groups[i][0].split()) > words
+
+
+def table_chunks(text, rows=20, words=400, path="data/grades.csv"):
+    doc = document(text, path=path, content_type="tabular")
+    return chunk_doc(doc, ChunkingConfig(narrative_words=words, tabular_rows=rows))
+
+
+SHEETS = ("# Sheet: Έξοδα\n" + "\n".join(f"Μήνας: {m}; Ποσό: {m * 10}" for m in range(1, 25))
+          + "\n\n# Sheet: Έσοδα\nΜήνας: 1; Ποσό: 900")
+
+
+# a tabular document goes to row groups, one sheet never shares a chunk with another
+def test_chunk_doc_cuts_tables_into_rows():
+    found = table_chunks(SHEETS, path="data/budget.xlsx")
+    assert [(c.text.count("\n") + 1, c.text.split("\n")[0], c.index_text.split("\n")[1]) for c in found] == [
+        (20, "# Sheet: Έξοδα", "Section: Sheet: Έξοδα"),
+        (5, "Μήνας: 20; Ποσό: 200", "Section: Sheet: Έξοδα"),
+        (2, "# Sheet: Έσοδα", "Section: Sheet: Έσοδα")]
+    assert all(c.content_type == "tabular" and c.chunk_strategy == "content_aware" for c in found)
+
+
+# the limits come from the config: tabular_rows and narrative_words
+def test_chunk_doc_uses_the_row_settings():
+    csv = "\n".join(f"a: {i}; b: {i}" for i in range(10))
+    assert [c.text.count("\n") + 1 for c in table_chunks(csv, rows=4)] == [4, 4, 2]
+    assert [c.text.count("\n") + 1 for c in table_chunks(csv, words=8)] == [2, 2, 2, 2, 2]
+
+
+# a csv has no sheet heading, so its chunks have no section line, and rows are not cut into windows
+def test_chunk_doc_csv_without_heading():
+    csv = "\n".join(f"Όνομα: φοιτητής{i}; Βαθμός: {i}" for i in range(3))
+    assert [c.index_text for c in table_chunks(csv, words=8)] == [
+        "File: data/grades.csv\n\nΌνομα: φοιτητής0; Βαθμός: 0\nΌνομα: φοιτητής1; Βαθμός: 1",
+        "File: data/grades.csv\n\nΌνομα: φοιτητής2; Βαθμός: 2"]
+
+
+# prose is still cut into word windows with overlap (already true, so not xfail)
+def test_chunk_doc_prose_is_not_cut_into_rows():
+    text = "\n".join(f"γραμμή {i}" for i in range(30))
+    assert len(chunks_of(document(text))) == 1
