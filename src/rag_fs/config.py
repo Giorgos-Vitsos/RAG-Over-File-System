@@ -60,6 +60,7 @@ class ChunkingConfig:
     narrative_words: int = 400
     overlap: float = 0.2
     tabular_rows: int = 20
+    grammars: str = "data/grammars"
 
 @dataclass(frozen=True)
 class ModelsConfig:

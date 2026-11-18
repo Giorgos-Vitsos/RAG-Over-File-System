@@ -1,9 +1,15 @@
+import re
+import re
 from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from rag_fs.config import ChunkingConfig
-from rag_fs.ingest.chunker import chunk_doc, make_chunk, split_rows, split_sections, split_windows
+from rag_fs.ingest import chunker
+from rag_fs.ingest.chunker import (
+    chunk_doc, code_language, make_chunk, split_blocks, split_code, split_rows, split_sections, split_windows,
+    use_grammars,
+)
 from rag_fs.models import Chunk, Document
 
 
@@ -384,3 +390,247 @@ def test_chunk_doc_csv_without_heading():
 def test_chunk_doc_prose_is_not_cut_into_rows():
     text = "\n".join(f"γραμμή {i}" for i in range(30))
     assert len(chunks_of(document(text))) == 1
+
+
+# K5a: code without a grammar is cut into blocks between empty lines, at most `words` words,
+# and a full chunk is cut before the least indented block, so a function is not cut in two (D112)
+
+
+def blocks(text, words, start=0, end=None):
+    if end is None:
+        end = len(text)
+    return [text[s:e] for s, e in split_blocks(text, start, end, words)]
+
+
+TWO_FUNCTIONS = "def f():\n    a = 1\n\n    b = 2\n\ndef g():\n    c = 3\n\n    d = 4"
+
+# (text, words, [text of each chunk])
+BLOCK_CASES = {
+    "empty text has no chunks": ("", 400, []),
+    "only spaces and new lines has no chunks": ("  \n\n\t\n", 400, []),
+    "small code is one chunk": ("x = 1\ny = 2", 400, ["x = 1\ny = 2"]),
+    "exactly the limit stays one chunk": ("x = 1\n\ny = 2", 6, ["x = 1\n\ny = 2"]),
+    "empty lines inside a function keep it in one chunk": (
+        "def f():\n    a = 1\n\n    b = 2", 400, ["def f():\n    a = 1\n\n    b = 2"]),
+    "a full chunk is cut before the next function": (
+        TWO_FUNCTIONS, 10, ["def f():\n    a = 1\n\n    b = 2", "def g():\n    c = 3\n\n    d = 4"]),
+    "a function is not cut at its empty line": (
+        TWO_FUNCTIONS, 14, ["def f():\n    a = 1\n\n    b = 2", "def g():\n    c = 3\n\n    d = 4"]),
+    "on a tie the latest place is cut": (
+        "def a(): x\n\ndef b(): y\n\ndef c(): z", 7, ["def a(): x\n\ndef b(): y", "def c(): z"]),
+    "the rest after a cut can need one more cut": (
+        "a\n\nb\n\n    c d e f\n\n    g h i", 6, ["a", "b\n\n    c d e f", "g h i"]),
+    "a block bigger than the limit is cut into whole lines": ("a b c\nd e f\ng h", 4, ["a b c", "d e f", "g h"]),
+    "a big block closes the chunk before it": ("x\n\na b c\nd e f\n\ny", 4, ["x", "a b c", "d e f", "y"]),
+    "lines with only spaces are empty lines": ("x = 1\n   \ny = 2", 3, ["x = 1", "y = 2"]),
+    "a hash is not a heading in code": ("# load\nx = 1\n\n# save\ny = 2", 400, ["# load\nx = 1\n\n# save\ny = 2"]),
+}
+
+
+@pytest.mark.parametrize("text, words, expected", BLOCK_CASES.values(), ids=BLOCK_CASES.keys())
+def test_split_blocks(text, words, expected):
+    assert blocks(text, words) == expected
+
+
+# offsets are positions in the whole text
+def test_split_blocks_inside_a_range():
+    text = "πριν\n\nx = 1\n\ny = 2\n\nμετά"
+    start, end = text.index("x"), text.index("\n\nμετά")
+    assert blocks(text, 3, start, end) == ["x = 1", "y = 2"]
+
+
+@pytest.mark.parametrize("text", ["x = 1", ""], ids=["code", "empty"])
+@pytest.mark.parametrize("words", [0, -1])
+def test_split_blocks_rejects_bad_settings(text, words):
+    with pytest.raises(ValueError):
+        blocks(text, words)
+
+
+CODE = "\n".join(
+    f"def f{i}(x):\n" + "\n".join(f"    y{j} = x + {j}" + ("\n" if j % 4 == 3 else "") for j in range(i % 9 + 1))
+    + ("\n\n" + "    # " + "λέξη " * 30 if i % 13 == 0 else "") + "\n"
+    for i in range(80))
+
+
+# for every limit: the chunks are in order, do not overlap, start and end on a line, hold every
+# word once, keep the limit (a chunk above it is a single line), and are cut between blocks
+@pytest.mark.parametrize("words", [400, 60, 25, 10, 3])
+def test_split_blocks_keeps_every_word(words):
+    found = split_blocks(CODE, 0, len(CODE), words)
+    assert " ".join(CODE[s:e] for s, e in found).split() == CODE.split()
+    for i, (start, end) in enumerate(found):
+        piece = CODE[start:end]
+        assert piece == piece.strip() and piece
+        assert start == 0 or CODE[:start].rstrip(" \t").endswith("\n")
+        assert end == len(CODE.rstrip()) or CODE[end:].lstrip(" \t").startswith("\n")
+        assert len(piece.split()) <= words or "\n" not in piece
+        if i > 0:
+            assert found[i - 1][1] < start
+
+
+# K5b: code with a grammar is cut with tree-sitter, like cAST: nodes are joined up to `words` words,
+# a bigger node is opened, a line is never cut, and the names go to the section (D112)
+# the grammars are read from data/grammars (downloaded once, then used offline)
+
+
+def code_pieces(text, language, words):
+    use_grammars("data/grammars")
+    return [(text[s:e], title) for s, e, title in split_code(text, language, words)]
+
+
+CLASS_A = "class A:\n    def x(self):\n        return 1\n\n    def y(self):\n        return 2"
+NAMESPACE = "namespace app {\nint f() { return 1; }\nint g() { return 2; }\n}"
+JAVA = "package p;\nimport q.R;\npublic class Main {\n    void a() { x(); }\n    void b() { y(); }\n}"
+
+# (text, language, words, [(text of the chunk, its title)])
+CODE_CASES = {
+    "empty code has no chunks": ("", "python", 400, []),
+    "only spaces has no chunks": ("  \n\n", "python", 400, []),
+    "small code is one chunk with the name": ("def f():\n    return 1", "python", 400, [("def f():\n    return 1", "f")]),
+    "functions that fit share a chunk": (
+        "def f():\n    a = 1\n    b = 2\n\ndef g():\n    c = 3", "python", 400,
+        [("def f():\n    a = 1\n    b = 2\n\ndef g():\n    c = 3", "f, g")]),
+    "a full chunk closes before the next function": (
+        "def f():\n    a = 1\n    b = 2\n\ndef g():\n    c = 3", "python", 10,
+        [("def f():\n    a = 1\n    b = 2", "f"), ("def g():\n    c = 3", "g")]),
+    "a big class is opened into its methods": (
+        CLASS_A, "python", 6,
+        [("class A:\n    def x(self):\n        return 1", "A > x"), ("def y(self):\n        return 2", "A > y")]),
+    "a big function is cut between statements and keeps its name": (
+        "def f():\n    a = 1\n    b = 2\n    c = 3", "python", 7, [("def f():\n    a = 1", "f"), ("b = 2\n    c = 3", "f")]),
+    "decorators belong to the function": ("@cache\ndef f():\n    return 1", "python", 400, [("@cache\ndef f():\n    return 1", "f")]),
+    "a hash comment is not a heading": ("# load\nx = 1", "python", 400, [("# load\nx = 1", "")]),
+    "c: the name is inside the declarator": ("int main(void) {\n    return 0;\n}", "c", 400, [("int main(void) {\n    return 0;\n}", "main")]),
+    "c: a function that returns a pointer": (
+        "static char *name(int x) {\n    return 0;\n}", "c", 400, [("static char *name(int x) {\n    return 0;\n}", "name")]),
+    "c++: a method written outside its class": (
+        "int Parser::read(int x) {\n    return x;\n}", "cpp", 400, [("int Parser::read(int x) {\n    return x;\n}", "Parser::read")]),
+    "c++: a small namespace is one chunk": ("namespace app {\nint f() { return 1; }\n}", "cpp", 400,
+                                           [("namespace app {\nint f() { return 1; }\n}", "app")]),
+    "c++: a big namespace gives a path of names": (
+        NAMESPACE, "cpp", 8,
+        [("namespace app {", "app"), ("int f() { return 1; }", "app > f"), ("int g() { return 2; }\n}", "app > g")]),
+    "java: a class": ("public class Main {\n    void a() { }\n}", "java", 400, [("public class Main {\n    void a() { }\n}", "Main")]),
+    "java: a big class is cut at whole lines": (
+        JAVA, "java", 6,
+        [("package p;\nimport q.R;", ""), ("public class Main {", "Main"), ("void a() { x(); }", "Main > a"),
+         ("void b() { y(); }\n}", "Main > b")]),
+    "c#: a class": ("class Program {\n    static void Main() { }\n}", "csharp", 400,
+                    [("class Program {\n    static void Main() { }\n}", "Program")]),
+    "greek letters do not move the positions": (
+        "def f():\n    return 'γειά'\n\ndef g():\n    return 'κόσμε'", "python", 4,
+        [("def f():\n    return 'γειά'", "f"), ("def g():\n    return 'κόσμε'", "g")]),
+    "a long comment is cut into whole lines": (
+        "/* a b c\nd e f\ng h */\nint x;", "c", 4, [("/* a b c", ""), ("d e f", ""), ("g h */", ""), ("int x;", "")]),
+    "a line is never cut": (
+        "int f() { if (a) { x(); } else { y(); } }", "c", 3, [("int f() { if (a) { x(); } else { y(); } }", "f")]),
+    "a string keeps the words between its escapes": (
+        'x = "a b c\\n d e f"', "python", 3, [('x = "a b c\\n d e f"', "")]),
+    "a function opened on a shared line keeps its name": (
+        "int x; int g(void) {\n    a = 1;\n    b = 2;\n}", "c", 11,
+        [("int x; int g(void) {\n    a = 1;\n    b = 2;", "g"), ("}", "g")]),
+    "a chunk without a function takes the deepest path": (
+        "x = 1\nclass A:\n    y = 2\n    z = 3\n    w = 4", "python", 8,
+        [("x = 1\nclass A:\n    y = 2", "A"), ("z = 3\n    w = 4", "A")]),
+}
+
+
+# a long string over many lines keeps every word, also the ones between its escapes
+def test_split_code_long_string_keeps_every_word():
+    text = 'x = """a b\\n c d\ne f\\n g h\ni j\\t k l\nm n"""\ny = 2'
+    assert " ".join(piece for piece, _ in code_pieces(text, "python", 3)).split() == text.split()
+
+
+@pytest.mark.parametrize("text, language, words, expected", CODE_CASES.values(), ids=CODE_CASES.keys())
+def test_split_code(text, language, words, expected):
+    assert code_pieces(text, language, words) == expected
+
+
+@pytest.mark.parametrize("text", ["x = 1", ""], ids=["code", "empty"])
+def test_split_code_rejects_bad_settings(text):
+    with pytest.raises(ValueError):
+        code_pieces(text, "python", 0)
+
+
+# (extension, language): the language comes from the extension, and .h is read as C++ (D112)
+@pytest.mark.parametrize("ext, language", [(".py", "python"), (".PY", "python"), (".c", "c"), (".h", "cpp"), (".H", "cpp"),
+                                           (".cpp", "cpp"), (".cxx", "cpp"), (".java", "java"), (".cs", "csharp"),
+                                           (".alpha", None), ("", None)])
+def test_code_language(ext, language):
+    assert code_language(ext) == language
+
+
+C_CODE = "\n".join(
+    f"/* function {i} */\nstatic int f{i}(int x) {{\n" + "".join(f"    x = x * {j} + {i};\n" for j in range(i % 11 + 1)) + "    return x;\n}\n"
+    for i in range(60))
+JAVA_CODE = "package p;\n\npublic class Big {\n" + "".join(
+    f"    public int m{i}(int x) {{\n" + "".join(f"        x += {j};\n" for j in range(i % 9 + 1)) + "        return x;\n    }\n\n"
+    for i in range(50)) + "}\n"
+
+
+# for every file and limit: every word once and in order, the chunks are in order, start and end at
+# whole lines, keep the limit, and a function that fits in the limit is never cut in two
+@pytest.mark.parametrize("words", [400, 80, 30])
+@pytest.mark.parametrize("text, language, function, function_end", [
+    (CODE, "python", r"def f\d+", "\ndef "), (C_CODE, "c", r"static int f\d+", "\n}\n"),
+    (JAVA_CODE, "java", r"public int m\d+", "\n    }\n")], ids=["python", "c", "java"])
+def test_split_code_keeps_functions_whole(text, language, function, function_end, words):
+    use_grammars("data/grammars")
+    found = split_code(text, language, words)
+    assert " ".join(text[s:e] for s, e, _ in found).split() == text.split()
+    for i, (start, end, title) in enumerate(found):
+        piece = text[start:end]
+        assert piece == piece.strip() and piece and isinstance(title, str)
+        assert start == 0 or text[:start].rstrip(" \t").endswith("\n")
+        assert end == len(text.rstrip()) or text[end:].lstrip(" \t").startswith("\n")
+        assert len(piece.split()) <= words or "\n" not in piece  # only a single long line can pass the limit
+        if i > 0:
+            assert found[i - 1][1] < start
+    starts = [start for start, _, _ in found]
+    for match in re.finditer(function, text):
+        begin = match.start()
+        close = text.find(function_end, begin)
+        close = len(text) if close == -1 else close
+        if len(text[begin:close].split()) < words:
+            assert not any(begin < s < close for s in starts), match.group()
+
+
+def code_chunks(text, path, words=400):
+    return chunk_doc(document(text, path=path, content_type="code"), ChunkingConfig(narrative_words=words))
+
+
+# a code file gets the names of its functions in the section, and is never cut at "headings"
+def test_chunk_doc_code_with_a_grammar():
+    text = "# Τίτλος που δεν είναι επικεφαλίδα\nimport os\n\ndef f():\n    return 1\n\ndef g():\n    return 2"
+    assert [c.index_text for c in code_chunks(text, "src/app.py")] == [f"File: src/app.py\nSection: f, g\n\n{text}"]
+
+
+# the word limit of code comes from the config
+def test_chunk_doc_code_uses_the_config():
+    text = "def f():\n    a = 1\n    b = 2\n\ndef g():\n    c = 3"
+    assert [c.index_text.split("\n")[1] for c in code_chunks(text, "src/app.py", words=10)] == ["Section: f", "Section: g"]
+
+
+# .h files are read as C++: the class gets its name
+def test_chunk_doc_header_file_is_cpp():
+    text = "class Reader {\npublic:\n    int read() { return 1; }\n};"
+    assert [c.index_text.split("\n")[1] for c in code_chunks(text, "include/reader.h")] == ["Section: Reader"]
+
+
+# code without a grammar goes to blocks between empty lines, without a section
+def test_chunk_doc_code_without_a_grammar():
+    text = "# a\nx 1\n\n# b\ny 2"
+    assert [(c.text, c.index_text) for c in code_chunks(text, "data/run.alpha", words=4)] == [
+        ("# a\nx 1", "File: data/run.alpha\n\n# a\nx 1"), ("# b\ny 2", "File: data/run.alpha\n\n# b\ny 2")]
+
+
+# a grammar that cannot be loaded is like no grammar: the file still gets chunks
+def test_chunk_doc_code_when_the_grammar_fails(monkeypatch):
+    monkeypatch.setattr(chunker, "code_parser", lambda language: None)
+    text = "def f():\n    return 1"
+    assert [c.index_text for c in code_chunks(text, "src/app.py")] == [f"File: src/app.py\n\n{text}"]
+
+
+# the grammars folder is part of the chunking config
+def test_chunking_config_has_the_grammars_folder():
+    assert ChunkingConfig().grammars == "data/grammars"
