@@ -2,7 +2,9 @@ from pathlib import Path, PureWindowsPath
 
 import pytest
 
-from rag_fs.ingest.chunker import split_sections, split_windows
+from rag_fs.config import ChunkingConfig
+from rag_fs.ingest.chunker import chunk_doc, make_chunk, split_sections, split_windows
+from rag_fs.models import Chunk, Document
 
 
 def sections(text):
@@ -178,20 +180,15 @@ def test_split_windows_covers_the_words(text, words, overlap):
 
 
 # K3: chunks with their header (D109) and every document turned into chunks (D32, D104, D108)
-# xfail until make_chunk and chunk_document exist; remove the marks after review
-K3 = pytest.mark.xfail(strict=True, reason="K3: make_chunk and chunk_document are not written yet")
 
 
 def document(text, path="notes/os.md", content_type="prose", status="ok"):
-    from rag_fs.models import Document  # goes to the top of the file after review
     return Document(file_path=Path(path), root_id="root_0", ext=Path(path).suffix, raw_text=text,
                     last_modified=0.0, content_type=content_type, parse_status=status, sha256="0" * 64)
 
 
 def chunks_of(doc, words=400, overlap=0.2):
-    from rag_fs.config import ChunkingConfig  # goes to the top of the file after review
-    from rag_fs.ingest.chunker import chunk_document  # goes to the top of the file after review
-    return chunk_document(doc, ChunkingConfig(narrative_words=words, overlap=overlap))
+    return chunk_doc(doc, ChunkingConfig(narrative_words=words, overlap=overlap))
 
 
 # (text, title, index_text of the chunk text[5:12])
@@ -201,11 +198,8 @@ HEADER_CASES = {
 }
 
 
-@K3
 @pytest.mark.parametrize("text, title, expected", HEADER_CASES.values(), ids=HEADER_CASES.keys())
 def test_make_chunk(text, title, expected):
-    from rag_fs.ingest.chunker import make_chunk  # goes to the top of the file after review
-    from rag_fs.models import Chunk  # goes to the top of the file after review
     doc = document(text, content_type="tabular")
     assert make_chunk(doc, 5, 12, title, "naive") == Chunk(
         chunk_id="notes/os.md#5-12", file_path=Path("notes/os.md"), char_start=5, char_end=12, text="κείμενο",
@@ -213,20 +207,18 @@ def test_make_chunk(text, title, expected):
 
 
 # stored paths always use / (D11), also for a path that comes from Windows
-@K3
 def test_make_chunk_writes_the_path_with_slashes():
-    from rag_fs.ingest.chunker import make_chunk
     doc = document("κείμενο")
-    doc.file_path = PureWindowsPath("Μαθήματα\\ΗΥ252\\os.md")
+    # on Windows a Path is a WindowsPath; PureWindowsPath lets the test do the same on Linux
+    doc.file_path = PureWindowsPath("Μαθήματα\\ΗΥ252\\os.md")  # pyright: ignore[reportAttributeAccessIssue]
     chunk = make_chunk(doc, 0, 7, "", "content_aware")
     assert (chunk.chunk_id, chunk.index_text) == ("Μαθήματα/ΗΥ252/os.md#0-7", "File: Μαθήματα/ΗΥ252/os.md\n\nκείμενο")
 
 
 # a document with no text still gives one chunk with only the header, so it is found by its path (D32)
-@K3
 @pytest.mark.parametrize("text, status", [("", "empty"), ("", "unsupported"), ("", "failed"), (" \n\n\t", "ok")],
                          ids=["empty", "unsupported", "failed", "only spaces"])
-def test_chunk_document_without_text(text, status):
+def test_chunk_doc_without_text(text, status):
     found = chunks_of(document(text, path="Thesis/drafts/v3.zip", content_type="prose", status=status))
     assert [(c.chunk_id, c.char_start, c.char_end, c.text, c.index_text) for c in found] == [
         ("Thesis/drafts/v3.zip#0-0", 0, 0, "", "File: Thesis/drafts/v3.zip\n\n")]
@@ -248,16 +240,14 @@ def header(title, path="notes/os.md"):
     return f"File: {path}\n" + (f"Section: {title}\n" if title else "") + "\n"
 
 
-@K3
 @pytest.mark.parametrize("text, words, expected", DOCUMENT_CASES.values(), ids=DOCUMENT_CASES.keys())
-def test_chunk_document(text, words, expected):
+def test_chunk_doc(text, words, expected):
     found = chunks_of(document(text), words=words)
     assert [(c.text, c.index_text) for c in found] == [(piece, header(title) + piece) for piece, title in expected]
 
 
 # the settings of the config reach the windows
-@K3
-def test_chunk_document_uses_the_config():
+def test_chunk_doc_uses_the_config():
     text = " ".join(f"w{i}" for i in range(10))
     assert [c.text for c in chunks_of(document(text), words=4, overlap=0.5)] == [
         "w0 w1 w2 w3", "w2 w3 w4 w5", "w4 w5 w6 w7", "w6 w7 w8 w9"]
@@ -266,9 +256,8 @@ def test_chunk_document_uses_the_config():
 
 # every chunk points to its exact text (plan, Step 4: raw_text[char_start:char_end] == text),
 # the chunks are in order with unique ids, and carry the type of the document and the strategy
-@K3
 @pytest.mark.parametrize("text", [LONG, MIXED, "\n\n# Α\n\nα  \n"], ids=["long", "mixed", "spaces around"])
-def test_chunk_document_points_to_the_text(text):
+def test_chunk_doc_points_to_the_text(text):
     doc = document(text)
     found = chunks_of(doc, words=50)
     assert found

@@ -1,4 +1,7 @@
 import re
+from rag_fs.models import Document,Chunk
+from rag_fs.config import ChunkingConfig
+from pathlib import Path
 
 HEADING=re.compile(r"(#{1,6}) (.*)")
 FENCE="```"#code block
@@ -45,7 +48,7 @@ def split_sections(text:str)->list[tuple[int,int,str]]:
 
 def split_windows(text, start, end, words:int, overlap) -> list[tuple[int,int]]:
     if words<1 or overlap<0:
-        raise ValueError(f"Values words and overlap should not be negative current: {words}, {overlap}")
+        raise ValueError(f"Values words and overlap should not be negative, current: {words}, {overlap}")
     step=words-round(words*overlap)
     if step<1:
         raise ValueError(f"Chunking step has invalid value of {step}, the overlap {overlap} consumes the whole window")
@@ -62,3 +65,21 @@ def split_windows(text, start, end, words:int, overlap) -> list[tuple[int,int]]:
         first_index+=step
     return windows
 
+def make_chunk(doc:Document,start,end,title,strategy:str)->Chunk:
+    file_path_txt=doc.file_path.as_posix()
+    text=doc.raw_text[start:end]
+    index_text=f"File: {file_path_txt}\n"
+    if title:
+        index_text+=f"Section: {title}\n"
+    index_text+="\n"+text
+    chunk_id=f"{file_path_txt}#{start}-{end}"
+    return Chunk(chunk_id=chunk_id,file_path=doc.file_path,char_start=start,char_end=end,text=text,index_text=index_text,content_type=doc.content_type,chunk_strategy=strategy)
+
+def chunk_doc(doc:Document,config:ChunkingConfig)->list[Chunk]:
+    if not doc.raw_text.strip():
+        return [make_chunk(doc,0,0,"",config.strategy)]
+    chunks=[]
+    for start,end,title in split_sections(doc.raw_text):
+        for window_s,window_e in split_windows(doc.raw_text,start,end,config.narrative_words,config.overlap):
+            chunks.append(make_chunk(doc,window_s,window_e,title,config.strategy))
+    return chunks
