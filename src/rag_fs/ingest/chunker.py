@@ -4,6 +4,8 @@ from rag_fs.config import ChunkingConfig
 from pathlib import Path
 import tree_sitter_language_pack as grammars
 from tree_sitter import Node,Parser
+import math
+import statistics
 
 HEADING=re.compile(r"(#{1,6}) (.*)")
 FENCE="```"#code block
@@ -82,6 +84,11 @@ def make_chunk(doc:Document,start,end,title,strategy:str)->Chunk:
 def chunk_doc(doc:Document,config:ChunkingConfig)->list[Chunk]:
     if not doc.raw_text.strip():
         return [make_chunk(doc,0,0,"",config.strategy)]
+    if config.strategy=="naive":
+        chunks=[]
+        for start,end in split_windows(doc.raw_text,0,len(doc.raw_text),config.narrative_words,config.overlap):
+            chunks.append(make_chunk(doc,start,end,"",config.strategy))
+        return chunks
     if doc.content_type=="code":#code is never cut at headings: a comment like "# load" is not one (D112)
         use_grammars(config.grammars)
         language=code_language(doc.ext)
@@ -311,3 +318,40 @@ def whole_lines(text:str,pieces:list[tuple[int,int,str]])->list[tuple[int,int,st
                 break
         result.append((start,end,title))
     return result
+
+def summary(values)->dict:
+    if not values:
+        return {
+            "mean": 0,
+            "median": 0,
+            "p90": 0
+        }
+    values=sorted(values)
+    p90=math.ceil(len(values)*90/100)#90%
+    mean=statistics.fmean(values)
+    median=statistics.median(values)
+    return {
+        "mean": mean,
+        "median": median,
+        "p90": values[p90-1]
+    }
+
+def length_stats(chunks:list[Chunk])->dict:
+    texts=[]
+    chars=[]
+    words=[]
+    for c in chunks:
+        if c.text:
+            texts.append(c.text)          
+    chunks_count=len(chunks)
+    empty_count=chunks_count-len(texts)
+    for text in texts:
+        chars.append(len(text))
+        words.append(len(text.split()))
+    return {
+        "chunks": chunks_count,
+        "empty": empty_count,
+        "chars": summary(chars),
+        "words": summary(words)
+    }
+    

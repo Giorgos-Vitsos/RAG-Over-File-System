@@ -53,7 +53,8 @@ class IngestConfig:
     def __post_init__(self):
         if self.workers<1:
             raise ValueError("IngestConfig have too little workers, workers must be 1+")
-        
+
+CHUNKING_ALLOWED_STRATS=("content_aware","naive")       
 @dataclass(frozen=True)
 class ChunkingConfig:
     strategy: str = "content_aware"
@@ -61,6 +62,9 @@ class ChunkingConfig:
     overlap: float = 0.2
     tabular_rows: int = 20
     grammars: str = "data/grammars"
+    def __post_init__(self):
+        if self.strategy not in CHUNKING_ALLOWED_STRATS:
+            raise ValueError(f"ChunkingConfig has unknown strategy: {self.strategy}, allowed are: {CHUNKING_ALLOWED_STRATS}")
 
 @dataclass(frozen=True)
 class ModelsConfig:

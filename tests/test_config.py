@@ -144,3 +144,32 @@ def test_ingest_paths(tmp_path):
     yaml_file.write_text("ingest:\n  cache: other/c.db\n  documents: other/d.jsonl\n")
     ingest = load_config(yaml_file).ingest
     assert (ingest.cache, ingest.documents, ingest.workers) == ("other/c.db", "other/d.jsonl", 2)
+
+
+# the chunker has two strategies: content_aware (the system) and naive (the ablation, D113)
+@pytest.mark.parametrize("strategy", ["content_aware", "naive"])
+def test_chunking_strategies(strategy, tmp_path):
+    assert ChunkingConfig(strategy=strategy).strategy == strategy
+    yaml_file = tmp_path / "exp.yaml"
+    yaml_file.write_text(f"chunking:\n  strategy: {strategy}\n")
+    assert load_config(yaml_file).chunking.strategy == strategy
+
+
+# any other name is a typo: it must stop the run, not silently chunk with something else
+@pytest.mark.parametrize("strategy", ["semantic", "Naive", "content-aware", ""])
+def test_chunking_strategy_must_be_known(strategy, tmp_path):
+    with pytest.raises(ValueError):
+        ChunkingConfig(strategy=strategy)
+    yaml_file = tmp_path / "exp.yaml"
+    yaml_file.write_text(f"chunking:\n  strategy: '{strategy}'\n")
+    with pytest.raises(ValueError):
+        load_config(yaml_file)
+
+
+# the chunk command writes its files in data/ by default, or where the yaml says (D113)
+@pytest.mark.xfail(strict=True, reason="K6b: chunks_dir is not in the config yet; remove the mark after review")
+def test_chunks_dir(tmp_path):
+    assert ChunkingConfig().chunks_dir == "data"
+    yaml_file = tmp_path / "exp.yaml"
+    yaml_file.write_text("chunking:\n  chunks_dir: other/chunks\n")
+    assert load_config(yaml_file).chunking.chunks_dir == "other/chunks"

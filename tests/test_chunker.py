@@ -7,8 +7,8 @@ import pytest
 from rag_fs.config import ChunkingConfig
 from rag_fs.ingest import chunker
 from rag_fs.ingest.chunker import (
-    chunk_doc, code_language, make_chunk, split_blocks, split_code, split_rows, split_sections, split_windows,
-    use_grammars,
+    chunk_doc, code_language, length_stats, make_chunk, split_blocks, split_code, split_rows, split_sections,
+    split_windows, use_grammars,
 )
 from rag_fs.models import Chunk, Document
 
@@ -634,3 +634,133 @@ def test_chunk_doc_code_when_the_grammar_fails(monkeypatch):
 # the grammars folder is part of the chunking config
 def test_chunking_config_has_the_grammars_folder():
     assert ChunkingConfig().grammars == "data/grammars"
+
+
+# K6a: the naive strategy (fixed word windows for every type, for the ablation) and the chunk length table (D113)
+
+def naive_chunks(text, path="notes/os.md", content_type="prose", words=400, overlap=0.2):
+    return chunk_doc(document(text, path=path, content_type=content_type),
+                     ChunkingConfig(strategy="naive", narrative_words=words, overlap=overlap))
+
+
+# (text, path, content_type, words, [text of each chunk]): the same word windows for every type,
+# without sections, rows or functions
+NAIVE_CASES = {
+    "headings do not start chunks": (
+        "Πρόλογος\n\n# Α\nα\n## Β\nβ", "notes/os.md", "prose", 400, ["Πρόλογος\n\n# Α\nα\n## Β\nβ"]),
+    "a long text is cut every few words": (
+        "# Α\nα β γ δ ε ζ\n# Β\nβ", "notes/os.md", "prose", 5, ["# Α\nα β γ", "γ δ ε ζ\n#", "# Β\nβ"]),
+    "rows of a table are cut": (
+        "# Sheet: Α\nΜήνας: 1; Ποσό: 10\nΜήνας: 2; Ποσό: 20", "data/a.xlsx", "tabular", 6,
+        ["# Sheet: Α\nΜήνας: 1; Ποσό:", "Ποσό: 10\nΜήνας: 2; Ποσό: 20"]),
+    "functions are cut": (
+        "def f():\n    a = 1\n    b = 2\n\ndef g():\n    c = 3", "src/app.py", "code", 6,
+        ["def f():\n    a = 1\n    b", "b = 2\n\ndef g():\n    c", "c = 3"]),
+}
+
+
+@pytest.mark.parametrize("text, path, content_type, words, expected", NAIVE_CASES.values(), ids=NAIVE_CASES.keys())
+def test_chunk_doc_naive(text, path, content_type, words, expected):
+    found = naive_chunks(text, path=path, content_type=content_type, words=words)
+    assert [(c.text, c.index_text) for c in found] == [(piece, header("", path) + piece) for piece in expected]
+    assert {(c.content_type, c.chunk_strategy) for c in found} == {(content_type, "naive")}
+
+
+# the naive windows take the words and the overlap of the config; the heading is only words, not a section
+def test_chunk_doc_naive_uses_the_config():
+    text = "# Α\n" + " ".join(f"w{i}" for i in range(8))
+    assert [(c.text, c.index_text) for c in naive_chunks(text, words=4, overlap=0.5)] == [
+        (piece, header("") + piece) for piece in ["# Α\nw0 w1", "w0 w1 w2 w3", "w2 w3 w4 w5", "w4 w5 w6 w7"]]
+    assert [c.text for c in naive_chunks(text, words=4, overlap=0)] == ["# Α\nw0 w1", "w2 w3 w4 w5", "w6 w7"]
+
+
+# a document with no text gives the same single chunk with only the header, marked naive
+# (already true, because the empty check comes first: keep it first)
+@pytest.mark.parametrize("text", ["", " \n\t"], ids=["empty", "only spaces"])
+def test_chunk_doc_naive_without_text(text):
+    found = naive_chunks(text, path="Thesis/drafts/v3.zip")
+    assert [(c.chunk_id, c.text, c.index_text, c.chunk_strategy) for c in found] == [
+        ("Thesis/drafts/v3.zip#0-0", "", "File: Thesis/drafts/v3.zip\n\n", "naive")]
+
+
+# the naive strategy never parses code, so it works even when no grammar can be loaded
+def test_chunk_doc_naive_does_not_parse_code(monkeypatch):
+    def no_parser(language):
+        raise AssertionError("the naive strategy must not parse code")
+    monkeypatch.setattr(chunker, "code_parser", no_parser)
+    monkeypatch.setattr(chunker, "use_grammars", no_parser)
+    text = "def f():\n    return 1"
+    assert [c.text for c in naive_chunks(text, path="src/app.py", content_type="code")] == [text]
+
+
+# every naive chunk points to its exact text, has no section line, and the chunks are the word windows of
+# the whole text, whatever the type (each text starts with a heading, which the naive strategy ignores)
+@pytest.mark.parametrize("content_type", ["prose", "tabular", "code"])
+@pytest.mark.parametrize("text", [LONG, MIXED, TABLE, CODE], ids=["long", "mixed", "table", "code"])
+def test_chunk_doc_naive_points_to_the_text(text, content_type):
+    text = "# Τίτλος\n\n" + text
+    doc = document(text, path="a/b.txt", content_type=content_type)
+    found = chunk_doc(doc, ChunkingConfig(strategy="naive", narrative_words=50))
+    assert [(c.char_start, c.char_end) for c in found] == split_windows(text, 0, len(text), 50, 0.2)
+    for c in found:
+        assert doc.raw_text[c.char_start:c.char_end] == c.text
+        assert c.text == c.text.strip() and c.text
+        assert c.index_text == f"File: a/b.txt\n\n{c.text}"
+    assert [c.char_start for c in found] == sorted({c.char_start for c in found})  # in order, no two the same
+
+
+def chunks_with(*texts):
+    return [make_chunk(document(text), 0, len(text), "", "content_aware") for text in texts]
+
+
+def of_words(*counts):
+    return chunks_with(*(" ".join(["w"] * n) for n in counts))  # n words are 2n - 1 characters
+
+
+# the example of the explanation: mean 319, median 385 (between the 5th and the 6th), p90 400
+def test_length_stats():
+    stats = length_stats(of_words(50, 120, 300, 350, 380, 390, 400, 400, 400, 400))
+    assert stats == {"chunks": 10, "empty": 0,
+                     "chars": {"mean": 637, "median": 769, "p90": 799},
+                     "words": {"mean": 319, "median": 385, "p90": 400}}
+
+
+# p90 is the length of a real chunk: the smallest one with at least 90% of the chunks at or below it
+@pytest.mark.parametrize("counts, p90", [
+    ([5], 5),
+    (range(1, 11), 9),
+    (range(1, 12), 10),
+    (range(1, 21), 18),
+    (range(1, 26), 23),
+    (range(1, 31), 27),
+    ([3, 1, 2], 3),
+    ([400] * 9 + [1], 400),
+], ids=["one chunk", "10 chunks", "11 chunks: 9.9 goes up", "20 chunks", "25 chunks: 22.5 goes up",
+        "30 chunks: a real chunk, not between two", "not in order", "small last"])
+def test_length_stats_p90(counts, p90):
+    assert length_stats(of_words(*counts))["words"]["p90"] == p90
+
+
+# the median of an odd count is the middle chunk; the mean is not rounded
+def test_length_stats_median_and_mean():
+    words = length_stats(of_words(1, 10, 2))["words"]
+    assert words["median"] == 2
+    assert words["mean"] == pytest.approx(13 / 3)
+    assert length_stats(of_words(1, 2))["words"]["median"] == pytest.approx(1.5)
+
+
+# chunks of documents without text are counted, but they do not pull the lengths down
+def test_length_stats_without_text():
+    found = of_words(10, 20) + chunks_with("")
+    assert length_stats(found) == {"chunks": 3, "empty": 1,
+                                   "chars": {"mean": 29, "median": 29, "p90": 39},
+                                   "words": {"mean": 15, "median": 15, "p90": 20}}
+    zero = {"mean": 0, "median": 0, "p90": 0}
+    assert length_stats(chunks_with("", "")) == {"chunks": 2, "empty": 2, "chars": zero, "words": zero}
+    assert length_stats([]) == {"chunks": 0, "empty": 0, "chars": zero, "words": zero}
+
+
+# words are counted as everywhere in the chunker: anything between spaces, tabs or new lines
+def test_length_stats_counts_words_and_characters():
+    stats = length_stats(chunks_with("α\tβ\n\nγ,δ  ε"))
+    assert (stats["words"]["mean"], stats["chars"]["mean"]) == (4, 11)
