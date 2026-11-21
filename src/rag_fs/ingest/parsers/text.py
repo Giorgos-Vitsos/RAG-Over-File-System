@@ -32,14 +32,14 @@ def read_text(path: Path)->str:
         if correct_count<VALID_THRESHOLD*broken_count:#if most characters are correct then thats probably the corrent encoding
             best=from_bytes(data,cp_isolation=FALLBACK_ENCODINGS).best()#tries the most common encodings in Greece
             if best is None:
-                raise ValueError(f"{path} is not a text file")
+                raise ValueError("not a text file")
             text=str(best)
             if best.encoding=="cp1253" and GREEK_AFTER_PILCROW.search(text):#edge case where ¶ was replacing capital Α
                 text=data.decode("iso8859_7",errors="replace")
         else:
             text=utf8_with_windows(data)
     if "\x00" in text:#we check for NULL byte
-        raise ValueError(f"{path} is not a text file")
+        raise ValueError("not a text file")
     return text
 
 def utf8_with_windows(data:bytes)->str:

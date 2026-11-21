@@ -9,12 +9,14 @@ from rag_fs.ingest.pipeline import read_files
 from rag_fs.models import Document,save_jsonl,load_jsonl,Chunk
 from rag_fs.ingest.quality import quality_reasons
 from rag_fs.ingest.chunker import chunk_doc,length_stats
+from rag_fs.logs import show_warnings
 import json
 import random
 
 STATUSES=["ok","ocr","empty","failed","unsupported"]
 
 def main(argv:list[str]|None=None):
+    show_warnings()
     parser=argparse.ArgumentParser(description="RAG over a local file system")
     commands=parser.add_subparsers(dest="command",required=True)
     scan_cmd=commands.add_parser("scan",help="report what the file scanner finds")
@@ -204,8 +206,9 @@ def ext_of(text:str)->str:
         text="."+text
     return text
 
-def show_progress(done:int,total:int)->None:
-    print(f"\r\033[Kread {done}/{total} files",end="",file=sys.stderr,flush=True)
+def show_progress(done:int,total:int,where:str="")->None:#where: the archive whose files are read, empty for the corpus
+    inside=f" in {where}" if where else ""
+    print(f"\r\033[Kread {done}/{total} files{inside}",end="",file=sys.stderr,flush=True)
 
 def print_summary(docs:list[Document],result:ScannerResult)->None:
     statuses=Counter()

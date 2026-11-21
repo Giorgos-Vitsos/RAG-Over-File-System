@@ -582,3 +582,11 @@ def test_show_without_chunks_is_unchanged(tmp_path, capsys):
     out = show_chunks(yaml_file, capsys, "secret-plans/notes.md")
     assert out.splitlines()[:3] == ["secret-plans/notes.md    (root_0)", "", f"status:ok    type:prose    len:{len(CHUNK_DOCS[0].raw_text)}"]
     assert "--- " not in out
+
+
+# K8: inside an archive the line says which one
+def test_progress_line_names_the_archive(capsys):
+    from rag_fs.cli import show_progress
+    show_progress(3, 40, "notes/old.zip")
+    show_progress(5, 9, "")
+    assert capsys.readouterr().err == "\r\x1b[Kread 3/40 files in notes/old.zip\r\x1b[Kread 5/9 files"

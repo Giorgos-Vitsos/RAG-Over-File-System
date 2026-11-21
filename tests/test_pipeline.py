@@ -462,10 +462,10 @@ def test_progress_of_the_workers(tmp_path, db, logged):
     root = tmp_path / "corpus"
     write(root, {"a.txt": "a", "b.txt": "b", "c.md": "# c", "copy/a.txt": "a"})
     calls = []
-    docs_of(root, db=db, workers=2, progress=lambda done, total: calls.append((done, total)))
+    docs_of(root, db=db, workers=2, progress=lambda done, total, where: calls.append((done, total)))
     assert calls == [(1, 3), (2, 3), (3, 3)]#the copy is read once
     calls.clear()
-    docs_of(root, db=db, workers=2, progress=lambda done, total: calls.append((done, total)))
+    docs_of(root, db=db, workers=2, progress=lambda done, total, where: calls.append((done, total)))
     assert calls == []#nothing to read the second time
 
 
@@ -474,7 +474,7 @@ def test_no_progress_without_workers(tmp_path):
     root = tmp_path / "corpus"
     write(root, {"a.txt": "a"})
     calls = []
-    docs_of(root, progress=lambda done, total: calls.append((done, total)))
+    docs_of(root, progress=lambda done, total, where: calls.append((done, total)))
     assert calls == []
 
 
@@ -487,3 +487,38 @@ def test_read_files_gives_what_was_ignored_inside_archives(tmp_path):
     docs = read_files(scan(corpus).files, corpus, ignored=ignored)
     assert [str(d.file_path) for d in docs] == ["notes.txt", "work.zip/a.txt"]
     assert sorted((str(p), reason) for p, reason in ignored) == [("work.zip/.git", "ignored_dir"), ("work.zip/Thumbs.db", "ignored_file")]
+
+
+# K8: a file inside an archive that cannot be read is named with the archive in front, as the user can find it
+# (the warning comes before the document gets its path, so the path must be right from the start)
+@pytest.mark.parametrize("workers", [None, 2], ids=["here", "in workers"])
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
+def test_warning_inside_an_archive_names_the_archive(tmp_path, caplog, monkeypatch, workers):
+    import logging
+    monkeypatch.setattr(pipeline, "START_METHOD", "fork")
+    root = tmp_path / "root"
+    write(root, {
+        "pack.zip": zip_bytes({"inner/table.txt": b"\x00\xff\x00" * 50, "inner/ok.txt": NOTES}),
+        "nested.zip": zip_bytes({"deep.zip": zip_bytes({"t.txt": b"\x00\x01" * 50})}),
+    })
+    with caplog.at_level(logging.WARNING):
+        docs = read_all(CorpusConfig(roots=[root]), workers=workers)
+    paths = {str(doc.file_path): doc.parse_status for doc in docs}
+    assert paths == {"pack.zip/inner/table.txt": "failed", "pack.zip/inner/ok.txt": "ok", "nested.zip/deep.zip/t.txt": "failed"}
+    assert {doc.root_id for doc in docs} == {"root_0"}
+    if workers is None:  # the workers log in their own processes, where caplog does not reach
+        assert sorted(caplog.messages) == ["cannot parse nested.zip/deep.zip/t.txt: not a text file",
+                                           "cannot parse pack.zip/inner/table.txt: not a text file"]
+
+
+# K8: the files inside an archive have their own count; the line names the archive,
+# so the count of the archive is not taken for the count of the whole corpus
+@FORK_WARNING
+def test_progress_inside_an_archive_names_it(tmp_path, db, logged):
+    root = tmp_path / "corpus"
+    write(root, {"a.txt": "a", "pack.zip": zip_bytes({"in/x.txt": "x", "in/y.txt": "y"}),
+                 "nested.zip": zip_bytes({"deep.zip": zip_bytes({"z.txt": "z"})})})
+    calls = []
+    docs_of(root, db=db, workers=2, progress=lambda done, total, where: calls.append((done, total, where)))
+    assert calls[0] == (1, 1, "")
+    assert sorted(calls[1:]) == [(1, 1, "nested.zip/deep.zip"), (1, 2, "pack.zip"), (2, 2, "pack.zip")]

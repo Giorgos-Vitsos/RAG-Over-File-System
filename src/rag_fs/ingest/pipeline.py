@@ -13,6 +13,7 @@ from rag_fs.ingest.file_scanner import ScannedFile, scan
 from rag_fs.ingest.filetypes import MB,is_archive
 from rag_fs.ingest.parsers import OCR_PARSERS,make_doc,parse_file
 from rag_fs.ingest.parsers.ocr import check_ocr
+from rag_fs.logs import show_warnings
 from rag_fs.models import Document
 
 START_METHOD="forkserver"
@@ -24,10 +25,10 @@ class ReadState:
     db:sqlite3.Connection|None=None#cache
     workers:int|None=None#count of processes
     skip:set[str]=field(default_factory=set)
-    progress:Callable[[int,int],None]|None=None
+    progress:Callable[[int,int,str],None]|None=None
     ignored:list[tuple[Path,str]]=field(default_factory=list)#what the scanner ignored inside archives
 
-def read_files(files:list[ScannedFile],corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None,progress:Callable[[int,int],None]|None=None,ignored:list[tuple[Path,str]]|None=None)->list[Document]:
+def read_files(files:list[ScannedFile],corpus:CorpusConfig,ocr:OCRConfig=OCRConfig(),db:sqlite3.Connection|None=None,workers:int|None=None,progress:Callable[[int,int,str],None]|None=None,ignored:list[tuple[Path,str]]|None=None)->list[Document]:
     check_ocr(ocr)
     state=ReadState(corpus,ocr,db,workers,progress=progress)
     if ignored is not None:#the caller gets what was ignored inside archives in its own list
@@ -55,20 +56,21 @@ def read_archive(scanned:ScannedFile,state:ReadState,depth:int=1,budget:Budget|N
     with tempfile.TemporaryDirectory() as tmp:#creates temp folder to unpack zip
         whole=unpack(scanned.abs_path,Path(tmp),corpus.max_file_size_mb*MB,budget)
         result=scan(replace(corpus,roots=[Path(tmp)]))#we scan the temp as corpus
-        files=result.files
+        files=[]
+        for file in result.files:#paths as the user knows them: the archive, then the path inside it
+            files.append(replace(file,rel_path=scanned.rel_path/file.rel_path,root_id=scanned.root_id))
         for path,reason in result.ignored:
             state.ignored.append((scanned.rel_path/path.relative_to(tmp),reason))
         new_files=[]
         for file in files:
             if file.sha256 not in state.skip:#files outside or in older archives are not read again
                 new_files.append(file)
-        parsed=parse_in_workers(new_files,state)
+        parsed=parse_in_workers(new_files,state,str(scanned.rel_path))
         for file in files:
             if file.sha256 in state.skip:#file already exists in corpus
                 continue
             state.skip.add(file.sha256)
-            for doc in read_one(file,state,parsed,depth+1,budget):
-                docs.append(replace(doc,file_path=scanned.rel_path/doc.file_path,root_id=scanned.root_id))
+            docs.extend(read_one(file,state,parsed,depth+1,budget))
     if not whole:
         docs.append(make_doc(scanned.rel_path.suffix.lower(),"","binary","failed",scanned))
     return docs
@@ -94,7 +96,7 @@ def parse_cached(file:ScannedFile,state:ReadState)->Document:
     put_cached(state.db,doc)
     return doc
 
-def parse_in_workers(files:list[ScannedFile],state:ReadState)->dict[tuple[str,str],Document]:
+def parse_in_workers(files:list[ScannedFile],state:ReadState,where:str="")->dict[tuple[str,str],Document]:#where: the archive, empty for the corpus
     parsed={}
     if state.workers is None:
         return parsed
@@ -120,11 +122,12 @@ def parse_in_workers(files:list[ScannedFile],state:ReadState)->dict[tuple[str,st
                 put_cached(state.db,doc)
             parsed[futures[future]]=doc
             if state.progress is not None:
-                state.progress(len(parsed),len(order))
+                state.progress(len(parsed),len(order),where)
     return parsed
 
 def start_new_process():
     os.nice(10)
+    show_warnings()#a new process starts without the logging of the main one
 
 def file_key(file:ScannedFile)->tuple[str,str]:
     return (file.sha256,file.rel_path.suffix.lower())

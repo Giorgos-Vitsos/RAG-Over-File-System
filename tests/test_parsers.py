@@ -195,6 +195,13 @@ def test_failure_is_logged_not_raised(tmp_path, caplog):
     assert "fake.txt" in caplog.text
 
 
+# the warning names the file once, as the user knows it: no folder of the disk or temp folder of an archive
+def test_failure_warning_has_no_folder(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING):
+        parse_one(tmp_path, "fake.txt", b"\x00\x01\x02")
+    assert caplog.messages == ["cannot parse fake.txt: not a text file"]
+
+
 # the date of the file is kept even when it fails or is unsupported
 @pytest.mark.parametrize("name, data", [
     ("notes.txt", "Γεια".encode()),        # read fine
