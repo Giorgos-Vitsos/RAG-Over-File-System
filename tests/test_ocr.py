@@ -661,8 +661,49 @@ def test_skew_angle(turn):
     assert abs(ocr_module.skew_angle(turned) + turn) <= 0.5
 
 
-def test_ocr_reads_the_straight_picture(monkeypatch):
-    seen = []
-    monkeypatch.setattr(ocr_module, "parse_ocr_image", lambda image, ocr: (seen.append(image), ("κείμενο", 95.0))[1])
-    ocr_module.ocr_image(lines_picture().rotate(3, expand=True, fillcolor="white"), OCRConfig())
-    assert abs(ocr_module.skew_angle(seen[0])) <= 0.5
+# a stand-in for parse_ocr_image: answers from the list, and the pictures it was given
+@pytest.fixture
+def fake_reading(monkeypatch):
+    seen = {"answers": [], "images": []}
+
+    def read(image, ocr):
+        seen["images"].append(image)
+        return seen["answers"][len(seen["images"]) - 1]
+
+    monkeypatch.setattr(ocr_module, "parse_ocr_image", read)
+    return seen
+
+
+# K8 (after the rebuild): the turn is only a second reading; screenshots have straight text and the
+# turn made them worse, so the straight picture is read first and the turn is kept only when tesseract is more sure
+# (answers for the picture as it is and for the turned one, result, calls)
+LEAN_CASES = {
+    "the turn is more sure": ([("ίσιο", 70.0), ("γερτό", 95.0)], ("γερτό", 95.0), 2),
+    "the turn is less sure": ([("ίσιο", 90.0), ("γερτό", 50.0)], ("ίσιο", 90.0), 2),
+    "as sure keeps the picture as it is": ([("ίσιο", 80.0), ("γερτό", 80.0)], ("ίσιο", 80.0), 2),
+    "both unsure tries upside down": ([("ίσιο", 40.0), ("γερτό", 50.0), ("ανάποδα", 55.0)], ("ανάποδα", 55.0), 3),
+}
+
+
+@pytest.mark.parametrize("answers, expected, calls", LEAN_CASES.values(), ids=LEAN_CASES.keys())
+def test_ocr_image_keeps_the_surer_of_straight_and_turned(fake_reading, answers, expected, calls):
+    leaning = lines_picture().rotate(3, expand=True, fillcolor="white")
+    fake_reading["answers"] = answers
+    assert ocr_module.ocr_image(leaning, OCRConfig()) == expected
+    images = fake_reading["images"]
+    assert len(images) == calls
+    assert images[0] is leaning
+    assert abs(ocr_module.skew_angle(images[1])) <= 0.5
+
+
+def test_ocr_image_turns_upside_down_the_surer_picture(fake_reading):
+    leaning = lines_picture().rotate(3, expand=True, fillcolor="white")
+    fake_reading["answers"] = [("ίσιο", 40.0), ("γερτό", 50.0), ("ανάποδα", 30.0)]
+    assert ocr_module.ocr_image(leaning, OCRConfig()) == ("γερτό", 50.0)
+    assert fake_reading["images"][2].tobytes() == ocr_module.straighten(leaning).rotate(180).tobytes()
+
+
+def test_ocr_image_reads_a_straight_picture_once(fake_reading):
+    fake_reading["answers"] = [("ίσιο", 90.0)]
+    assert ocr_module.ocr_image(lines_picture(), OCRConfig()) == ("ίσιο", 90.0)
+    assert len(fake_reading["images"]) == 1

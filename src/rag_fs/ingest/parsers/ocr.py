@@ -138,8 +138,12 @@ def straighten(image:Image.Image)->Image.Image:
     return image.rotate(angle,expand=True,fillcolor="white")
 
 def ocr_image(image,ocr:OCRConfig)->tuple[str,float]:
-    image=straighten(image)
     original=parse_ocr_image(image,ocr)
+    straight=straighten(image)
+    if straight is not image:#we only rotate when its better
+        turned=parse_ocr_image(straight,ocr)
+        if turned[1]>original[1]:
+            image,original=straight,turned
     if original[1]>=ocr.min_confidence:
         return original
     rotated=parse_ocr_image(image.rotate(180),ocr)#we try to rotate to be read better
