@@ -14,6 +14,8 @@ POLYTONIC_TONOS={chr(0x300),chr(0x342)}
 GREEK_AFTER_PILCROW=re.compile(f"\u00b6[{GREEK}]")
 ACCENT_START=re.compile(r"[\u0384\u00b4][ΑΕΗΙΟΥΩ]")#greek characters with accents that break
 CP1252_SIGNS="".join(bytes([b]).decode("cp1252") for b in range(0x80,0xa0) if b not in (0x81,0x8d,0x8f,0x90,0x9d))
+ZERO_WIDTH=re.compile("[\u200b\u2060\ufeff\u00ad]")
+WORDLIKE=re.compile(r"^[(\"«“'\[]*[^\W\d_]{2,}[)\"»”'\].,;:!?]*$")#a wordlike token
 MOJIBAKE=re.compile("[\u0080-\u00ff"+re.escape(CP1252_SIGNS)+"]+")#possible broken characters
 
 def read_text(path: Path)->str:
@@ -57,6 +59,13 @@ def utf8_with_windows(data:bytes)->str:
             data=data[e.end:]
     return "".join(parts)
 
+def word_share(text:str)->tuple[int,float]:#number of tokanes and wordlike tokens
+    tokens=text.split()
+    if not tokens:
+        return 0,1.0
+    words=sum(1 for token in tokens if WORDLIKE.match(token))
+    return len(tokens),words/len(tokens)
+
 def unify_newlines(text:str)->str:
     return text.replace("\r\n","\n").replace("\r","\n")
 
@@ -65,6 +74,7 @@ def normalize(text:str)->str:
     text=ACCENT_START.sub(lambda match: unicodedata.normalize("NFC",match.group(0)[-1]+"\u0301"),text)
     text=unicodedata.normalize("NFKC",text)
     text=monotonic(text)
+    text=ZERO_WIDTH.sub("",text)
     return text
 
 def monotonic(text:str)->str:

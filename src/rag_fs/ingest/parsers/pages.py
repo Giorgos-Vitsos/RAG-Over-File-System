@@ -8,6 +8,9 @@ END_BROKEN=re.compile(r"(\w+)-$")#a word and a hyphen at the very end
 START_WORD=re.compile(r"(\w+)")
 HYPHENATED_WORD=re.compile(r"\w+(?:-\w+)*")#a word together with its hyphens
 NUMBER=re.compile(r"\d+")
+URL_BROKEN=re.compile(r"(?<!\S)((?:https?:|www\.)\S*)[ \t]*\n[ \t]*(?=(\S+))")#an address at the end of a line
+URL_END="./_?=&#%~:"#an address that ends with one of these goes on in the next line
+URL_NEXT="./?=&"#and the next line goes on with an address part
 
 def edge_key(text: str)->str:
     return NUMBER.sub("#"," ".join(text.split()).lower())#different pages give the same key if the dig is the only difference
@@ -74,7 +77,15 @@ def get_words(pages:  list[list[tuple[str,list[list[str]]|None]]])->set[str]:#it
                     words.add(word.lower())
     return words
 
+def join_urls(block:str)->str:#joings broken urls
+    def join(match:re.Match)->str:
+        if match.group(1)[-1] in URL_END and any(c in match.group(2) for c in URL_NEXT):
+            return match.group(1)
+        return match.group(1)+"\n"
+    return URL_BROKEN.sub(join,block)
+
 def fix_text_block(block:str,words:set[str])->str:
+    block=join_urls(block)
     block=BROKEN_WORD.sub(lambda match: join_broken(match.group(1),match.group(2),words),block)#fixes broken words "-"
     block=LIGATURE.sub(lambda match: unicodedata.normalize("NFKC",match.group()),block)#fixes combined symbols
     return " ".join(block.split())

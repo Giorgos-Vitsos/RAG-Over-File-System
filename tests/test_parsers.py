@@ -49,7 +49,7 @@ from rag_fs.ingest.parsers.opendocument import read_odf, read_ods
 from rag_fs.ingest.parsers.rtf import read_rtf
 from rag_fs.ingest.parsers.tables import cell_to_str, fill_merged, format_rows
 from rag_fs.ingest.parsers.tabular import read_csv, read_xls, read_xlsx
-from rag_fs.ingest.parsers.text import read_text
+from rag_fs.ingest.parsers.text import read_text, word_share
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -2505,3 +2505,22 @@ def test_read_pptx_alternate_content(tmp_path):
     p.save(str(f))
 
     assert read_pptx(f) == "# Slide 1\n\nπριν\n\nμέσα\n\nμετά\n\nομάδα"
+
+
+# K8 (L57): invisible characters are removed: zero width space, word joiner, BOM in the middle, soft hyphen;
+# the zero width joiner stays (emoji and other languages need it)
+def test_parse_file_drops_invisible_characters(tmp_path):
+    written = "υπο\u200bδομές, λέ\u2060ξη, μέ\ufeffσα, πληρο\u00adφορία, 👩\u200d💻"
+    assert parse_one(tmp_path, "notes.txt", written.encode()).raw_text == "υποδομές, λέξη, μέσα, πληροφορία, 👩\u200d💻"
+
+
+# K8 (L55): which tokens count as words: letters only, two or more, with punctuation around them
+@pytest.mark.parametrize("text, expected", [
+    ("λέξη, (λέξη). «word»", (3, 1.0)),
+    ("α β γ x", (4, 0.0)),
+    ("x2 12 — ^^ a.b", (5, 0.0)),
+    ("λέξη 7", (2, 0.5)),
+    ("", (0, 1.0)),
+], ids=["words with punctuation", "single letters", "digits and symbols", "half", "nothing"])
+def test_word_share(text, expected):
+    assert word_share(text) == expected

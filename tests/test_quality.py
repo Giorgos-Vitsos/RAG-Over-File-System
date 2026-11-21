@@ -58,3 +58,23 @@ def test_quality_reasons(text, status, expected):
 @pytest.mark.parametrize("content_type", ["code", "tabular"])
 def test_quality_reasons_of_code_and_tables(content_type):
     assert reasons(with_control(11), content_type=content_type) == ["control_chars"]
+
+
+# K8 (L55): prose where fewer than 30 tokens in a hundred are words: a broken text layer, a bad scan, or data
+def with_words(words, tokens=100):
+    return " ".join(["λέξη"] * words + ["7^"] * (tokens - words))
+
+
+FEW_WORDS_CASES = {
+    "29 words in a hundred": (with_words(29), "prose", ["few_words"]),
+    "30 words in a hundred": (with_words(30), "prose", []),
+    "19 tokens are too few to judge": (with_words(0, 19), "prose", []),
+    "20 tokens": (with_words(0, 20), "prose", ["few_words"]),
+    "code is not judged": (with_words(0), "code", []),
+    "tables are not judged": (with_words(0), "tabular", []),
+}
+
+
+@pytest.mark.parametrize("text, content_type, expected", FEW_WORDS_CASES.values(), ids=FEW_WORDS_CASES.keys())
+def test_quality_few_words(text, content_type, expected):
+    assert reasons(text, content_type=content_type) == expected

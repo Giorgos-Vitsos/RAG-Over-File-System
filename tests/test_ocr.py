@@ -637,3 +637,32 @@ def test_lookalikes_keep_a_word_the_text_writes_in_latin(tmp_path):
         scan_pdf(tmp_path, pages)
         doc = parse_one(tmp_path, "slides.pdf", (tmp_path / "scan.pdf").read_bytes())
     assert doc.raw_text.endswith("Thank you HY 150 Programming.")
+
+
+# K8 (L56): a whole word in Latin capitals becomes Greek when the text has it in Greek with accents
+def test_parse_file_fixes_lookalikes_without_accents(tmp_path, monkeypatch):
+    read = "ENNOIA, ΣΚΟΠΟΣ ΚΑΙ ΠΕΡΙΕΧΟΜΕΝΑ. Η έννοια του σχεδίου."
+    assert parse_ocr_text(tmp_path, monkeypatch, read).raw_text == "ΕΝΝΟΙΑ, ΣΚΟΠΟΣ ΚΑΙ ΠΕΡΙΕΧΟΜΕΝΑ. Η έννοια του σχεδίου."
+
+
+# L56: a photo of a page that is turned a little is made straight before the OCR
+def lines_picture(width=1200, height=900):
+    image = Image.new("RGB", (width, height), "white")
+    pixels = numpy.asarray(image).copy()
+    for top in range(80, height - 80, 60):  # lines of "text": rows of dark marks with gaps
+        for left in range(100, width - 100, 40):
+            pixels[top:top + 18, left:left + 28] = 0
+    return Image.fromarray(pixels)
+
+
+@pytest.mark.parametrize("turn", [0, 3, -4, 1.5])
+def test_skew_angle(turn):
+    turned = lines_picture().rotate(turn, expand=True, fillcolor="white")
+    assert abs(ocr_module.skew_angle(turned) + turn) <= 0.5
+
+
+def test_ocr_reads_the_straight_picture(monkeypatch):
+    seen = []
+    monkeypatch.setattr(ocr_module, "parse_ocr_image", lambda image, ocr: (seen.append(image), ("κείμενο", 95.0))[1])
+    ocr_module.ocr_image(lines_picture().rotate(3, expand=True, fillcolor="white"), OCRConfig())
+    assert abs(ocr_module.skew_angle(seen[0])) <= 0.5

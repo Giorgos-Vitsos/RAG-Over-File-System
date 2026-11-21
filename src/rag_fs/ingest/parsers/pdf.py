@@ -3,7 +3,7 @@ import pymupdf
 from .tables import format_rows
 from .pages import block_texts,count_edges,drop_repeated_edges,edge_key,fix_text_block,get_words,join_broken_pages
 from .ocr import fix_lookalikes,ocr_sample,run_ocr,word_counts
-from .text import WORD,count_chars,fix_suspicious_text
+from .text import WORD,count_chars,fix_suspicious_text,word_share
 from PIL import Image
 from rag_fs.config import OCRConfig
 
@@ -17,6 +17,8 @@ CHAR_COUNT_OCR_FLAG=50
 OCR_MORE=2#ocr replaces if text is this time more than normal parser
 SUSPICIOUS_WORD_RATIO=0.2
 CONTROL_CHAR_RATIO_FILTER=0.2#if we have more than that then the text is probably broken
+JUNK_WORDS=0.3#a page with a picture and fewer words than this share may hide a scan behind a broken text layer (L55)
+JUNK_MIN_TOKENS=20#fewer tokens than this are too few to judge
 
 def read_pdf(path:Path,ocr: OCRConfig=OCRConfig())->tuple[str,bool]:
     with pymupdf.open(path) as file:
@@ -75,6 +77,8 @@ def ocr_pages(file,pages:list[list[tuple[str,list[list[str]]|None]]],ocr:OCRConf
             page_chars=useful_chars(pages[index])
             if 0<page_chars<CHAR_COUNT_OCR_FLAG and useful_chars([(text_ocr,None)])<=OCR_MORE*page_chars:#a short page keeps its own text
                 continue
+            if is_junk(pages[index]) and word_share(text_ocr)[1]<=page_words(pages[index])[1]:#the OCR must read more words
+                continue
             new_blocks=[]
             for block in text_ocr.split("\n\n"):
                 new_blocks.append((block,None))
@@ -82,6 +86,16 @@ def ocr_pages(file,pages:list[list[tuple[str,list[list[str]]|None]]],ocr:OCRConf
             scanned.append(index)
     scanned.sort()
     return scanned
+
+def page_words(blocks:list[tuple[str,list[list[str]]|None]])->tuple[int,float]:
+    parts=[]
+    for text,rows in blocks:
+        parts.extend(block_texts(text,rows))
+    return word_share(" ".join(parts))
+
+def is_junk(blocks:list[tuple[str,list[list[str]]|None]])->bool:
+    tokens,share=page_words(blocks)
+    return tokens>=JUNK_MIN_TOKENS and share<JUNK_WORDS
 
 def useful_chars(blocks:list[tuple[str,list[list[str]]|None]])->int:#actual chars and not whitespace or control
     count=0
@@ -103,6 +117,8 @@ def needs_ocr(page,blocks:list[tuple[str,list[list[str]]|None]])->bool:#little t
             whitespace_count+=whitespace
             control_char_count+=control
     if char_count<CHAR_COUNT_OCR_FLAG and page.get_images():
+        return True
+    if page.get_images() and is_junk(blocks):#a scanner put a broken text layer over the picture
         return True
     return control_char_count>(char_count-whitespace_count)*CONTROL_CHAR_RATIO_FILTER
 

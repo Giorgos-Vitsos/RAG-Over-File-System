@@ -1054,3 +1054,52 @@ def test_bookmark_not_found_after_a_found_one_keeps_the_order(tmp_path):
     pages = ["<p>Επισκόπηση</p><p>Κείμενο της ενότητας.</p>"]
     toc = [[1, "Επισκόπηση", 1], [2, "Λεπτομέρειες που δεν φαίνονται", 1]]
     assert toc_pdf(tmp_path, pages, toc) == "# Επισκόπηση\n\nΚείμενο της ενότητας.\n\n## Λεπτομέρειες που δεν φαίνονται"
+
+
+# K8 (L55): a scanner can put a broken text layer over the picture of a page; that page goes to OCR too,
+# and the OCR text is kept only when it has more words than the layer
+JUNK = "<p>" + "7« /f a ^ fCA ?OiC 4^ — ± (: . " * 4 + "</p>"
+
+
+def words_and_numbers(words, numbers):
+    return "<p>" + " ".join(["λέξεις"] * words + ["123"] * numbers) + "</p>"
+
+
+JUNK_CASES = {
+    "broken layer and a picture: OCR": ([[(0.1, 0.3, JUNK), (0.4, 0.7, SCAN)]], FOUND, (FOUND[0], True)),
+    "the OCR reads even fewer words: the layer stays": (
+        [[(0.1, 0.3, JUNK), (0.4, 0.7, SCAN)]], ("^^ ~~ 7 4 | (( )) ^^ ~~ 7 4 | ((", 95.0), (None, False)),
+    "broken layer without a picture: no OCR": ([[(0.1, 0.3, JUNK)]], FOUND, (None, False)),
+    "29 words in a hundred and a picture: OCR": (
+        [[(0.1, 0.4, words_and_numbers(29, 71)), (0.5, 0.7, SCAN)]], FOUND, (FOUND[0], True)),
+    "30 words in a hundred and a picture: no OCR": (
+        [[(0.1, 0.4, words_and_numbers(30, 70)), (0.5, 0.7, SCAN)]], FOUND, (None, False)),
+    "19 tokens are too few to judge": ([[(0.1, 0.3, words_and_numbers(0, 19)), (0.5, 0.7, SCAN)]], FOUND, (None, False)),
+    "20 tokens are enough": ([[(0.1, 0.3, words_and_numbers(0, 20)), (0.5, 0.7, SCAN)]], FOUND, (FOUND[0], True)),
+}
+
+
+@pytest.mark.parametrize("pages, found, expected", JUNK_CASES.values(), ids=JUNK_CASES.keys())
+def test_read_pdf_broken_text_layer(tmp_path, fake_ocr, pages, found, expected):
+    fake_ocr["answer"] = found
+    text, used = scan_pdf(tmp_path, pages)
+    if expected[0] is None:  # the page keeps its own text
+        assert not used and text and FOUND[0] not in text
+    else:
+        assert (text, used) == expected
+
+
+# L58: an address cut at the end of a line is joined without a space; anything else is joined with a space
+URL_CASES = {
+    "cut after a dot": ("<p>Στη σελίδα https://elearn.<br>uoc.gr. Τέλος.</p>", "Στη σελίδα https://elearn.uoc.gr. Τέλος."),
+    "cut after the colon": ("<p>Στη σελίδα https:<br>//elearn.uoc.gr τέλος.</p>", "Στη σελίδα https://elearn.uoc.gr τέλος."),
+    "www and a path": ("<p>Δες το www.csd.<br>uoc.gr/~hy252 εδώ.</p>", "Δες το www.csd.uoc.gr/~hy252 εδώ."),
+    "a sentence after an address": ("<p>Δες το https://a.com.<br>Μετά συνεχίζουμε.</p>", "Δες το https://a.com. Μετά συνεχίζουμε."),
+    "an address that ends with a letter": ("<p>Δες https://site.gr<br>e.g. το παράδειγμα.</p>", "Δες https://site.gr e.g. το παράδειγμα."),
+    "a word that is not an address": ("<p>Τέλος της πρότασης.<br>uoc.gr είναι εδώ.</p>", "Τέλος της πρότασης. uoc.gr είναι εδώ."),
+}
+
+
+@pytest.mark.parametrize("html, expected", URL_CASES.values(), ids=URL_CASES.keys())
+def test_read_pdf_joins_a_cut_address(tmp_path, html, expected):
+    assert read(tmp_path, [html]) == expected
