@@ -1,3 +1,4 @@
+import copy
 import datetime
 import itertools
 import json
@@ -2473,3 +2474,34 @@ def test_read_text_windows_bytes_in_utf8(tmp_path, data, expected):
     f = tmp_path / "mixed.txt"
     f.write_bytes(data)
     assert read_text(f) == expected
+
+
+
+# python-pptx skips shapes inside mc:AlternateContent (newer PowerPoint effects): their text is read once,
+# from the first choice, in its place among the other shapes, also inside a group (D114)
+def wrap_in_alternate(tree, shape_element):
+    mc = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+    alternate = pptx_parse_xml(f'<mc:AlternateContent xmlns:mc="{mc}"><mc:Choice Requires="a14" '
+                               'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main"/><mc:Fallback/></mc:AlternateContent>')
+    shape_element.addprevious(alternate)
+    alternate[1].append(copy.deepcopy(shape_element))
+    alternate[0].append(shape_element)
+
+
+def test_read_pptx_alternate_content(tmp_path):
+    p = pptx.Presentation()
+    slide = p.slides.add_slide(p.slide_layouts[LAYOUT_BLANK])
+    boxes = []
+    for text in ("πριν", "μέσα", "μετά"):
+        box = slide.shapes.add_textbox(PptxInches(1), PptxInches(1), PptxInches(3), PptxInches(1))
+        box.text_frame.text = text
+        boxes.append(box)
+    group = slide.shapes.add_group_shape()
+    inner = group.shapes.add_textbox(PptxInches(1), PptxInches(1), PptxInches(3), PptxInches(1))
+    inner.text_frame.text = "ομάδα"
+    wrap_in_alternate(slide.shapes._spTree, boxes[1]._element)
+    wrap_in_alternate(group.shapes._spTree, inner._element)
+    f = tmp_path / "alternate.pptx"
+    p.save(str(f))
+
+    assert read_pptx(f) == "# Slide 1\n\nπριν\n\nμέσα\n\nμετά\n\nομάδα"

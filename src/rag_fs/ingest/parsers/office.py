@@ -49,6 +49,7 @@ FIELD_ADDRESS=re.compile(r'\s*(?:"([^"]*)"|(\S+))')
 CHART="{http://schemas.openxmlformats.org/drawingml/2006/chart}"
 DRAWING="{http://schemas.openxmlformats.org/drawingml/2006/main}"
 RELATION="{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+MC_ALTERNATE="{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent"#a shape in a newer and an older form
 DGM="{http://schemas.openxmlformats.org/drawingml/2006/diagram}"#tags of a smartart
 
 def read_docx(path: Path)->str:
@@ -261,7 +262,7 @@ def pptx_to_text(ppt: PptxPresentation)->str:
     for i,slide in enumerate(ppt.slides):
         block=[]
         title=slide.shapes.title
-        for shape in slide.shapes:
+        for shape in shapes_in_order(slide.shapes):
             if title is not None and shape.shape_id==title.shape_id:#if we have a title we dont want to write it twice
                 continue
             block.extend(format_shape(shape))
@@ -284,10 +285,22 @@ def pptx_to_text(ppt: PptxPresentation)->str:
                     output.append(f"Notes: {notes_txt}")
     return "\n\n".join(output)
 
+def shapes_in_order(shapes)->list[BaseShape]:#python-pptx skips shapes inside mc:AlternateContent
+    tree=shapes._spTree
+    found=[]
+    for element in tree.iterchildren():
+        if element.tag in tree._shape_tags:
+            found.append(shapes._shape_factory(element))
+        elif element.tag==MC_ALTERNATE and len(element):#we read only the first choice, the others repeat it
+            for inner in element[0].iterchildren():
+                if inner.tag in tree._shape_tags:
+                    found.append(shapes._shape_factory(inner))
+    return found
+
 def format_shape(shape:BaseShape)->list[str]:
     output=[]
     if isinstance(shape, GroupShape):
-        for sub_shape in shape.shapes:
+        for sub_shape in shapes_in_order(shape.shapes):
             output.extend(format_shape(sub_shape))
     elif isinstance(shape, Shape):
         text=pptx_frame_text(shape.text_frame)

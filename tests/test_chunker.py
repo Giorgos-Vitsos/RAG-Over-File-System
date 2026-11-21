@@ -34,8 +34,8 @@ SECTION_CASES = {
                                  ("## 2.1 Εισαγωγή\nε", "Κεφάλαιο 2 > 2.1 Εισαγωγή"),
                                  ("## 2.2 Μέθοδος\nμ", "Κεφάλαιο 2 > 2.2 Μέθοδος")]),
     "back to a higher level": ("# Α\n## Β\n### Γ\nγ\n# Δ\nδ",
-                               [("# Α", "Α"), ("## Β", "Α > Β"), ("### Γ\nγ", "Α > Β > Γ"), ("# Δ\nδ", "Δ")]),
-    "a level is skipped": ("# Α\n### Β\nβ\n## Γ\nγ", [("# Α", "Α"), ("### Β\nβ", "Α > Β"), ("## Γ\nγ", "Α > Γ")]),
+                               [("# Α\n## Β\n### Γ\nγ", "Α > Β > Γ"), ("# Δ\nδ", "Δ")]),
+    "a level is skipped": ("# Α\n### Β\nβ\n## Γ\nγ", [("# Α\n### Β\nβ", "Α > Β"), ("## Γ\nγ", "Α > Γ")]),
     "starts below the top level": ("## Α\nα\n# Β\nβ\n## Γ\nγ", [("## Α\nα", "Α"), ("# Β\nβ", "Β"), ("## Γ\nγ", "Β > Γ")]),
     "heading with nothing under it is still a section": (
         "# Slide 1: Αρχή\n\n# Slide 2\n\nκείμενο", [("# Slide 1: Αρχή", "Slide 1: Αρχή"), ("# Slide 2\n\nκείμενο", "Slide 2")]),
@@ -764,3 +764,180 @@ def test_length_stats_without_text():
 def test_length_stats_counts_words_and_characters():
     stats = length_stats(chunks_with("α\tβ\n\nγ,δ  ε"))
     assert (stats["words"]["mean"], stats["chars"]["mean"]) == (4, 11)
+
+
+# K7: fixes after the spot check of the corpus (L51-L54, D114)
+
+# L54: a section with only its heading joins the deeper section right after it (D104 changed)
+JOIN_CASES = {
+    "a heading followed by a deeper one": ("# Α\n## Β\nβ", [("# Α\n## Β\nβ", "Α > Β")]),
+    "a chain of headings": ("# Α\n## Β\n### Γ\nγ", [("# Α\n## Β\n### Γ\nγ", "Α > Β > Γ")]),
+    "empty lines between them": ("# Α\n\n## Β\n\nβ", [("# Α\n\n## Β\n\nβ", "Α > Β")]),
+    "joined, then back up": ("# Α\n## Β\nβ\n## Γ\nγ", [("# Α\n## Β\nβ", "Α > Β"), ("## Γ\nγ", "Α > Γ")]),
+    "the same level stays apart": ("# Α\n# Β\nβ", [("# Α", "Α"), ("# Β\nβ", "Β")]),
+    "a higher level stays apart": ("## Α\n# Β\nβ", [("## Α", "Α"), ("# Β\nβ", "Β")]),
+    "the last heading stays alone": ("# Α\nα\n## Β", [("# Α\nα", "Α"), ("## Β", "Α > Β")]),
+    "text before the first heading is not a heading": ("Πρόλογος\n## Β\nβ", [("Πρόλογος", ""), ("## Β\nβ", "Β")]),
+    "a heading with code under it is not alone": (
+        f"# Α\n{FENCE}\nx\n{FENCE}\n## Β\nβ", [(f"# Α\n{FENCE}\nx\n{FENCE}", "Α"), ("## Β\nβ", "Α > Β")]),
+    "a heading inside code does not join": (
+        f"# Α\n{FENCE}\n# x\n{FENCE}\nα\n## Β\nβ", [(f"# Α\n{FENCE}\n# x\n{FENCE}\nα", "Α"), ("## Β\nβ", "Α > Β")]),
+}
+
+
+@pytest.mark.parametrize("text, expected", JOIN_CASES.values(), ids=JOIN_CASES.keys())
+def test_split_sections_joins_a_lone_heading(text, expected):
+    assert sections(text) == expected
+
+
+@pytest.mark.parametrize("text", [text for text, _ in JOIN_CASES.values()])
+def test_split_sections_joined_covers_the_text(text):
+    test_split_sections_covers_the_text(text)
+
+
+# L51: only the formats whose parser writes headings are cut at headings; in plain text "# " is a comment,
+# and plain text is cut into blocks of whole lines (windows only inside a line longer than the limit)
+def plain_chunks(text, path="notes/todo.txt", words=400, overlap=0.2):
+    return chunk_doc(document(text, path=path), ChunkingConfig(narrative_words=words, overlap=overlap))
+
+
+# (text, path, words, [text of each chunk])
+PLAIN_CASES = {
+    "a comment in a config file is not a heading": (
+        "# Doxyfile\nPROJECT = x\n\n# the name\nNAME = y", "conf/Doxyfile.in", 400, ["# Doxyfile\nPROJECT = x\n\n# the name\nNAME = y"]),
+    "a hash line in a txt is not a heading": ("# Τίτλος\nκείμενο", "notes/todo.txt", 400, ["# Τίτλος\nκείμενο"]),
+    "a file without an extension": ("# build\nall: main\n\tcc main.c", "src/Makefile", 400, ["# build\nall: main\n\tcc main.c"]),
+    "paragraphs are kept whole": ("α β γ\n\nδ ε ζ\n\nη θ", "notes/todo.txt", 6, ["α β γ\n\nδ ε ζ", "η θ"]),
+    "rows of data are never cut": ("1 2 3\n4 5 6\n7 8 9", "data/u.data", 4, ["1 2 3", "4 5 6", "7 8 9"]),
+    "a line longer than the limit is cut into windows": (
+        "α\n\n" + numbered(10) + "\n\nβ", "notes/todo.txt", 4, ["α", "w0 w1 w2 w3", "w3 w4 w5 w6", "w6 w7 w8 w9", "β"]),
+}
+
+
+@pytest.mark.parametrize("text, path, words, expected", PLAIN_CASES.values(), ids=PLAIN_CASES.keys())
+def test_chunk_doc_plain_text(text, path, words, expected):
+    assert [(c.text, c.index_text) for c in plain_chunks(text, path, words)] == [
+        (piece, header("", path) + piece) for piece in expected]
+
+
+# the windows inside a long line take the overlap of the config
+def test_chunk_doc_plain_text_uses_the_overlap():
+    assert [c.text for c in plain_chunks(numbered(10), words=4, overlap=0.5)] == [
+        "w0 w1 w2 w3", "w2 w3 w4 w5", "w4 w5 w6 w7", "w6 w7 w8 w9"]
+
+
+# these formats get their headings from the parser (D29), also with a capital extension
+@pytest.mark.parametrize("ext", [".md", ".markdown", ".pdf", ".docx", ".pptx", ".odt", ".rtf", ".html", ".epub", ".ipynb",
+                                 ".xlsx", ".ods", ".MD"])
+def test_chunk_doc_headings_of_parsed_formats(ext):
+    found = chunks_of(document("# Α\nα\n# Β\nβ", path=f"a/b{ext}"))
+    assert [c.index_text.split("\n")[1] for c in found] == ["Section: Α", "Section: Β"]
+
+
+# plain text, unknown extensions and pictures (OCR) have no headings
+@pytest.mark.parametrize("ext", [".txt", ".in", "", ".yaml", ".tex", ".ini", ".dat", ".png", ".properties"])
+def test_chunk_doc_no_headings_in_plain_text(ext):
+    found = chunks_of(document("# Α\nα\n# Β\nβ", path=f"a/b{ext}"))
+    assert [c.text for c in found] == ["# Α\nα\n# Β\nβ"]
+    assert all("Section:" not in c.index_text for c in found)
+
+
+# a csv has no headings either: a row that starts with "# " stays a row
+def test_chunk_doc_csv_has_no_headings():
+    found = table_chunks("# Σημείωση\nΌνομα: α\nΌνομα: β", rows=2)
+    assert [c.text for c in found] == ["# Σημείωση\nΌνομα: α", "Όνομα: β"]
+    assert all("Section:" not in c.index_text for c in found)
+
+
+# plain text keeps every word, points to its exact text, and no chunk is over the limit
+@pytest.mark.parametrize("words", [400, 50, 7])
+@pytest.mark.parametrize("text", [LONG, MIXED, CODE, numbered(401)], ids=["long", "mixed", "code", "one long line"])
+def test_chunk_doc_plain_text_keeps_every_word(text, words):
+    doc = document(text, path="notes/todo.txt")
+    found = chunk_doc(doc, ChunkingConfig(narrative_words=words))
+    covered = [False] * len(text)
+    for c in found:
+        assert doc.raw_text[c.char_start:c.char_end] == c.text and c.text == c.text.strip()
+        assert len(c.text.split()) <= words
+        covered[c.char_start:c.char_end] = [True] * (c.char_end - c.char_start)
+    assert all(covered[m.start()] for m in re.finditer(r"\S+", text))
+    assert [c.char_start for c in found] == sorted({c.char_start for c in found})
+
+
+# L52: names inside wrappers (#ifndef, #ifdef, extern "C", templates, export), each name once,
+# and export macros are not taken for the name; (text, language, words, [titles])
+TITLE_CASES = {
+    "an include guard": (
+        "#ifndef A_H\n#define A_H\nint f(void) { return 1; }\nint g(void) { return 2; }\n#endif", "c", 400, ["f, g"]),
+    "#ifdef and #else": ("#ifdef X\nint f(void) { return 1; }\n#else\nint g(void) { return 2; }\n#endif", "c", 400, ["f, g"]),
+    "extern C": ('extern "C" {\nint f(void) { return 1; }\n}', "cpp", 400, ["f"]),
+    "a template": ("template<typename T> T biggest(T a, T b) { return a; }", "cpp", 400, ["biggest"]),
+    "export in typescript": ("export function f() { return 1 }\nexport class A { m() { return 2 } }", "typescript", 400, ["f, A"]),
+    "an arrow function in a const": ("const f = () => { return 1 }\nconst x = 2", "javascript", 400, ["f"]),
+    "the same name once": ("void a() {}\nvoid a(int x) {}", "cpp", 400, ["a"]),
+    "an export macro is not the name": (
+        "class FL_EXPORT Fl_Browser : public Fl_Browser_ {\npublic:\n  int x() { return 1; }\n};", "cpp", 400, ["Fl_Browser"]),
+    "an api macro in a struct": ("struct GTEST_API_ Info {\n  int x;\n};", "cpp", 400, ["Info"]),
+    "a struct named in capitals is a name": ("struct POINT {\n  int x;\n};", "c", 400, ["POINT"]),
+    "a python main block": ("def f():\n    return 1\n\nif __name__ == '__main__':\n    f()", "python", 400, ["f"]),
+}
+
+
+@pytest.mark.parametrize("text, language, words, expected", TITLE_CASES.values(), ids=TITLE_CASES.keys())
+def test_split_code_titles(text, language, words, expected):
+    found = split_code(text, language, words)
+    assert [title for _, _, title in found] == expected
+    assert [text[s:e] for s, e, _ in found] == [text]  # the text itself never changes
+
+
+# a big class inside an include guard is opened, and its methods keep the path of names
+def test_split_code_big_class_inside_a_guard():
+    text = ("#ifndef A_H\n#define A_H\nclass A {\npublic:\n  int x() {\n    return 1;\n  }\n"
+            "  int y() {\n    return 2;\n  }\n};\n#endif")
+    titles = [title for _, _, title in split_code(text, "cpp", 8)]
+    assert "A > x" in titles and "A > y" in titles
+
+
+# a macro in front of a big class: the class is still opened and nothing is lost
+def test_split_code_macro_keeps_every_word():
+    text = "class FL_EXPORT Big : public Base {\n" + "".join(f"  int m{i}() {{ return {i}; }}\n" for i in range(30)) + "};"
+    found = split_code(text, "cpp", 40)
+    assert len(found) > 1 and all(t.startswith("Big") for _, _, t in found)
+    covered = [False] * len(text)
+    for s, e, _ in found:
+        covered[s:e] = [True] * (e - s)
+    assert all(covered[m.start()] for m in re.finditer(r"\S+", text))
+
+
+# L53: a comment on its own line stays with the code after it; (text, language, words, [(text, title)])
+COMMENT_CASES = {
+    "a comment goes with the function after it": (
+        "int a(void) { return 1; }\n// about b\nint b(void) {\n  return 2;\n}", "c", 9,
+        [("int a(void) { return 1; }", "a"), ("// about b\nint b(void) {\n  return 2;\n}", "b")]),
+    "a run of comments stays together": (
+        "int a(void) { return 1; }\n// one\n// two\nint b(void) { return 2; }", "c", 10,
+        [("int a(void) { return 1; }", "a"), ("// one\n// two\nint b(void) { return 2; }", "b")]),
+    "a comment at the end of a line belongs to that line": (
+        "int x;\nint a(void) { return 1; } // about a\nint b(void) {\n  return 2;\n}", "c", 13,
+        [("int x;\nint a(void) { return 1; } // about a", "a"), ("int b(void) {\n  return 2;\n}", "b")]),
+    "python": (
+        "def a():\n    return 1\n\n# about b\ndef b():\n    return 2", "python", 7,
+        [("def a():\n    return 1", "a"), ("# about b\ndef b():\n    return 2", "b")]),
+    "only comments are still cut at lines": (
+        "// a b\n// c d\n// e f\n// g h", "c", 6, [("// a b\n// c d", ""), ("// e f\n// g h", "")]),
+}
+
+
+@pytest.mark.parametrize("text, language, words, expected", COMMENT_CASES.values(), ids=COMMENT_CASES.keys())
+def test_split_code_keeps_comments_with_code(text, language, words, expected):
+    assert code_pieces(text, language, words) == expected
+
+
+# a big array of data is opened like a function, and its pieces take its name
+@pytest.mark.parametrize("text, language", [
+    ("static const unsigned char logo[] = {\n" + "".join(f"  {i}, {i}, {i}, {i},\n" for i in range(40)) + "};", "c"),
+    ("const DATA = [\n" + "".join(f"  {i}, {i}, {i}, {i},\n" for i in range(40)) + "];", "javascript"),
+], ids=["c array", "js const"])
+def test_split_code_big_data_takes_its_name(text, language):
+    found = split_code(text, language, 30)
+    assert len(found) > 1 and {title for _, _, title in found} == {"logo" if language == "c" else "DATA"}

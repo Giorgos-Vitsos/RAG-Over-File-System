@@ -1,6 +1,7 @@
 import re
 from rag_fs.models import Document,Chunk
 from rag_fs.config import ChunkingConfig
+from rag_fs.ingest.filetypes import HEADING_EXT
 from pathlib import Path
 import tree_sitter_language_pack as grammars
 from tree_sitter import Node,Parser
@@ -32,22 +33,28 @@ def split_sections(text:str)->list[tuple[int,int,str]]:
     title=""
     position=0
     inside_code=False
+    lone=False#the section has only its heading so far
     for line in text.split("\n"):
         if inside_code:
             if line==FENCE:#we need to close ```
                 inside_code=False
+            lone=False
         elif line.startswith(FENCE):#or start ```
             inside_code=True
         else:
             match=HEADING.fullmatch(line)
             if match and match.group(2).strip():
-                add_section(sections,text,start,position,title)#new heading closes the last section
                 level=len(match.group(1))
+                if not (lone and level>trail[-1][0]):#a heading alone joins the deeper heading after it
+                    add_section(sections,text,start,position,title)#new heading closes the last section
+                    start=position
                 while trail and trail[-1][0]>=level:
                     trail.pop()
                 trail.append((level,match.group(2).strip()))
                 title=" > ".join(name for _,name in trail)
-                start=position
+                lone=True
+            elif line.strip():
+                lone=False
         position+=len(line)+1
     add_section(sections,text,start,len(text),title)
     return sections
@@ -89,22 +96,39 @@ def chunk_doc(doc:Document,config:ChunkingConfig)->list[Chunk]:
         for start,end in split_windows(doc.raw_text,0,len(doc.raw_text),config.narrative_words,config.overlap):
             chunks.append(make_chunk(doc,start,end,"",config.strategy))
         return chunks
-    if doc.content_type=="code":#code is never cut at headings: a comment like "# load" is not one (D112)
+    if doc.content_type=="code":#code is never cut at headings: a comment like "# load" is not one
         use_grammars(config.grammars)
         language=code_language(doc.ext)
         code_pieces=split_code(doc.raw_text,language,config.narrative_words) if language else None
         if code_pieces is None:#no grammar: blocks between empty lines
             code_pieces=[(start,end,"") for start,end in split_blocks(doc.raw_text,0,len(doc.raw_text),config.narrative_words)]
         return [make_chunk(doc,start,end,title,config.strategy) for start,end,title in code_pieces]
+    parsed=doc.ext.lower() in HEADING_EXT#only these parsers write headings, in plain text "# " is a comment 
+    if parsed:
+        sections=split_sections(doc.raw_text)
+    else:
+        start,end=trimmed(doc.raw_text,0,len(doc.raw_text))
+        sections=[(start,end,"")]
     chunks=[]
-    for start,end,title in split_sections(doc.raw_text):
+    for start,end,title in sections:
         if doc.content_type=="tabular":#we cut tables
             pieces=split_rows(doc.raw_text,start,end,config.tabular_rows,config.narrative_words)
-        else:
+        elif parsed:
             pieces=split_windows(doc.raw_text,start,end,config.narrative_words,config.overlap)
+        else:
+            pieces=split_lines(doc.raw_text,start,end,config.narrative_words,config.overlap)
         for piece_s,piece_e in pieces:
             chunks.append(make_chunk(doc,piece_s,piece_e,title,config.strategy))
     return chunks
+
+def split_lines(text:str,start:int,end:int,words:int,overlap:float)->list[tuple[int,int]]:#plain text: blocks of whole lines 
+    pieces=[]
+    for block_s,block_e in split_blocks(text,start,end,words):
+        if len(text[block_s:block_e].split())>words:#a line longer than the limit is cut into windows
+            pieces.extend(split_windows(text,block_s,block_e,words,overlap))
+        else:
+            pieces.append((block_s,block_e))
+    return pieces
 
 def split_rows(text:str, start:int, end:int, rows:int, words:int) -> list[tuple[int,int]]:
     if rows<1 or words<1:
@@ -217,7 +241,9 @@ def node_name(node:Node)->str|None:
     return name.text.decode("utf-8","replace").strip() or None
 
 def is_definition(node:Node)->bool:
-    has_body=node.child_by_field_name("body") is not None or node.child_by_field_name("definition") is not None
+    value=node.child_by_field_name("value")#const f = () => {...}
+    has_body=(node.child_by_field_name("body") is not None or node.child_by_field_name("definition") is not None
+              or (value is not None and value.child_by_field_name("body") is not None))
     return has_body and node_name(node) is not None
 
 def node_words(data:bytes,start:int,end:int)->int:
@@ -230,23 +256,38 @@ def children_hold_all(node:Node,data:bytes)->bool:#a string keeps its text betwe
     inside=sum(visible(data,child.start_byte,child.end_byte) for child in node.children)
     return node.child_count>0 and inside==visible(data,node.start_byte,node.end_byte)
 
+def inner_path(node:Node,path:list[str])->list[str]:#the path of names inside a node that is opened
+    name=node_name(node)
+    if not name or node.type.startswith("preproc") or (path and path[-1]==name):##ifndef A_H is not a name, logo > logo is one
+        return path
+    return path+[name]#a definition, or a big named array: static char logo[]={...} 
+
 def code_atoms(node:Node,data:bytes,words:int,path:list[str],atoms:list[tuple[Node,list[str]]])->None:
     for child in node.children:
         if node_words(data,child.start_byte,child.end_byte)<=words or not children_hold_all(child,data):
             atoms.append((child,path))
         else:#too big so we check inside for smaller parts
-            name=node_name(child)
-            inner=path+[name] if name and is_definition(child) else path
+            inner=inner_path(child,path)
             code_atoms(child,data,words,inner,atoms)
+
+def definition_names(node:Node,path:list[str])->list[str]:#also inside #ifndef, extern "C", templates, export (D114)
+    names=[]
+    pending=[node]#a stack instead of recursion: long expressions can be very deep
+    while pending:
+        current=pending.pop()
+        name=node_name(current)
+        if name and is_definition(current):
+            names.append(" > ".join(path+[name]))
+        else:
+            pending.extend(reversed(current.children))
+    return names
 
 def group_title(group:list[tuple[Node,list[str]]])->str:
     names=[]
     for node,path in group:
-        name=node_name(node)
-        if name and is_definition(node):
-            names.append(" > ".join(path+[name]))
+        names.extend(definition_names(node,path))
     if names:
-        return ", ".join(names)
+        return ", ".join(dict.fromkeys(names))#each name once, in order
     deepest=max(group,key=lambda atom:len(atom[1]))#the first of the longest paths
     return " > ".join(deepest[1])
 
@@ -259,10 +300,24 @@ def code_piece(text:str,data:bytes,group:list[tuple[Node,list[str]]])->tuple[int
 
 def line_cut(group:list[tuple[Node,list[str]]],node:Node)->int|None:
     following=[atom[0] for atom in group[1:]]+[node]#we can cut before any of these
-    for index in range(len(group),0,-1):#the latest place first
-        if following[index-1].start_point[0]>group[index-1][0].end_point[0]:
-            return index
+    for keep_comments in (True,False):#first try to keep each comment with the code after it (D114)
+        for index in range(len(group),0,-1):#the latest place first
+            if following[index-1].start_point[0]>group[index-1][0].end_point[0]:
+                if keep_comments and leading_comment(group,index-1):
+                    continue
+                return index
     return None
+
+def leading_comment(group:list[tuple[Node,list[str]]],index:int)->bool:#a comment on its own line describes what follows
+    node=group[index][0]
+    if "comment" not in node.type:
+        return False
+    return index==0 or group[index-1][0].end_point[0]<node.start_point[0]
+
+EXPORT_MACRO=re.compile(rb"\b(?:class|struct)\s+([A-Z][A-Z0-9_]*)\s+(?=[A-Za-z_]\w*\s*(?:final\s*)?[:{])")#class FL_EXPORT Browser {
+
+def hide_macros(data:bytes)->bytes:#spaces in place of the macro: the same length keeps every position (D114)
+    return EXPORT_MACRO.sub(lambda m:m.group(0)[:m.start(1)-m.start()]+b" "*(m.end(1)-m.start(1))+m.group(0)[m.end(1)-m.start():],data)
 
 def split_code(text:str,language:str,words:int)->list[tuple[int,int,str]]|None:
     if words<1:
@@ -271,6 +326,8 @@ def split_code(text:str,language:str,words:int)->list[tuple[int,int,str]]|None:
     if parser is None:
         return None
     data=text.encode("utf-8")
+    if language in ("c","cpp"):
+        data=hide_macros(data)
     tree=parser.parse(data)#the code tree
     atoms=[]
     code_atoms(tree.root_node,data,words,[],atoms)
@@ -295,8 +352,7 @@ def split_code(text:str,language:str,words:int)->list[tuple[int,int,str]]|None:
             pieces.append(code_piece(text,data,group[:cut]))
             group=group[cut:]
         if group and node_words(data,group[0][0].start_byte,node.end_byte)>words and children_hold_all(node,data):
-            name=node_name(node)
-            inner=path+[name] if name and is_definition(node) else path
+            inner=inner_path(node,path)#it does not fit: open it
             for child in reversed(node.children):
                 pending.append((child,inner))
             continue
