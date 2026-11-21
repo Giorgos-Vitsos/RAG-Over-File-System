@@ -62,6 +62,7 @@ class ChunkingConfig:
     overlap: float = 0.2
     tabular_rows: int = 20
     grammars: str = "data/grammars"
+    chunks_dir: str="data/chunks"
     def __post_init__(self):
         if self.strategy not in CHUNKING_ALLOWED_STRATS:
             raise ValueError(f"ChunkingConfig has unknown strategy: {self.strategy}, allowed are: {CHUNKING_ALLOWED_STRATS}")

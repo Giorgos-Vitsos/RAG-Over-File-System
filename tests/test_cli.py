@@ -5,8 +5,11 @@ import pytest
 from rag_fs.ingest import pipeline
 from rag_fs.ingest.cache import get_cached, open_cache
 from rag_fs.ingest.file_scanner import scan
-from rag_fs.config import CorpusConfig
-from rag_fs.models import Document, load_jsonl
+import json
+
+from rag_fs.config import CorpusConfig, load_config
+from rag_fs.ingest.chunker import chunk_doc, length_stats
+from rag_fs.models import Chunk, Document, load_jsonl, save_jsonl
 from test_pipeline import CODE, NOTES, logged, read_all, write, zip_bytes  # noqa: F401 (logged is a fixture)
 
 FORK_WARNING = pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
@@ -331,3 +334,251 @@ def test_progress_line_is_cleared(tmp_path, monkeypatch, capsys):
     ingest(yaml_file)
     err = capsys.readouterr().err
     assert "\r\x1b[Kread 2/2 files" in err
+
+
+# K6b: the chunk command (one file of chunks and one of stats per strategy), --sample, show --chunks (D113)
+
+def parsed(path, text, content_type="prose", status="ok"):
+    return Document(file_path=Path(path), root_id="root_0", ext=Path(path).suffix, raw_text=text, last_modified=0.0,
+                    content_type=content_type, parse_status=status, sha256="0" * 64)
+
+
+CHUNK_DOCS = [
+    parsed("secret-plans/notes.md", "# Α\n\nΠρώτο κείμενο.\n\n## Β\n\nΔεύτερο κείμενο εδώ."),
+    parsed("secret-plans/grades.csv", "Όνομα: Άννα; Βαθμός: 9\nΌνομα: Νίκος; Βαθμός: 7", "tabular"),
+    parsed("secret-plans/main.py", "def f():\n    return 1\n\ndef g():\n    return 2", "code"),
+    parsed("secret-plans/old.zip", "", "binary", "failed"),
+    parsed("secret-plans/empty.txt", "", "prose", "empty"),
+]
+
+
+# documents saved as the ingest would save them, and a yaml that chunks them into out/chunks
+def chunk_setup(tmp_path, docs=CHUNK_DOCS, more=""):
+    documents = tmp_path / "docs" / "documents.jsonl"
+    documents.parent.mkdir(parents=True)
+    save_jsonl(docs, documents)
+    yaml_file = tmp_path / "exp.yaml"
+    yaml_file.write_text(f"ingest:\n  documents: \"{documents.as_posix()}\"\n"
+                         f"chunking:\n  chunks_dir: \"{(tmp_path / 'out' / 'chunks').as_posix()}\"\n{more}",
+                         encoding="utf-8")
+    return yaml_file, tmp_path / "out" / "chunks"
+
+
+def run_chunk(yaml_file, *more):
+    from rag_fs.cli import main
+    main(["chunk", str(yaml_file), *more])
+
+
+def chunked(docs, config):
+    return [c for doc in docs for c in chunk_doc(doc, config.chunking)]
+
+
+# the chunks of every document, in order, as chunk_doc gives them with the settings of the yaml
+@pytest.mark.parametrize("more", ["", "  narrative_words: 3\n  tabular_rows: 1\n"], ids=["defaults", "settings"])
+def test_chunk_saves_the_chunks(tmp_path, more):
+    yaml_file, folder = chunk_setup(tmp_path, more=more)
+    run_chunk(yaml_file)
+    assert load_jsonl(Chunk, folder / "chunks-content_aware.jsonl") == chunked(CHUNK_DOCS, load_config(yaml_file))
+
+
+# every strategy has its own file, so the naive chunks never overwrite the content-aware ones
+def test_chunk_one_file_per_strategy(tmp_path):
+    yaml_file, folder = chunk_setup(tmp_path)
+    run_chunk(yaml_file)
+    naive_yaml = tmp_path / "naive.yaml"
+    naive_yaml.write_text(yaml_file.read_text(encoding="utf-8") + "  strategy: naive\n", encoding="utf-8")
+    run_chunk(naive_yaml)
+    assert load_jsonl(Chunk, folder / "chunks-content_aware.jsonl") == chunked(CHUNK_DOCS, load_config(yaml_file))
+    naive = load_jsonl(Chunk, folder / "chunks-naive.jsonl")
+    assert naive == chunked(CHUNK_DOCS, load_config(naive_yaml))
+    assert {c.chunk_strategy for c in naive} == {"naive"}
+
+
+# next to the chunks: the strategy, its settings, the number of documents, and the length table of all
+# the chunks and of each content type
+def test_chunk_saves_the_stats(tmp_path):
+    yaml_file, folder = chunk_setup(tmp_path, more="  narrative_words: 3\n")
+    run_chunk(yaml_file)
+    chunks = chunked(CHUNK_DOCS, load_config(yaml_file))
+    stats = json.loads((folder / "chunks-content_aware.stats.json").read_text(encoding="utf-8"))
+    assert stats == {
+        "strategy": "content_aware",
+        "settings": {"narrative_words": 3, "overlap": 0.2, "tabular_rows": 20},
+        "documents": 5,
+        "all": length_stats(chunks),
+        "by_type": {kind: length_stats([c for c in chunks if c.content_type == kind])
+                    for kind in ["binary", "code", "prose", "tabular"]},
+    }
+
+
+# what it prints: how many chunks from how many documents, then one line per type (in order) and one for all:
+# chunks, empty, words mean/median/p90, chars mean/median/p90, with the mean and the median to one decimal
+def test_chunk_summary(tmp_path, capsys):
+    yaml_file, folder = chunk_setup(tmp_path)
+    run_chunk(yaml_file)
+    chunks = chunked(CHUNK_DOCS, load_config(yaml_file))
+
+    def line(name, found):
+        s = length_stats(found)
+        w, c = s["words"], s["chars"]
+        return (f"{name}: {s['chunks']} chunks, {s['empty']} empty, words {w['mean']:.1f}/{w['median']:.1f}/{w['p90']}, "
+                f"chars {c['mean']:.1f}/{c['median']:.1f}/{c['p90']}")
+    assert capsys.readouterr().out.splitlines() == [
+        f"Chunks {len(chunks)} from 5 documents (content_aware)", "",
+        *[line(kind, [c for c in chunks if c.content_type == kind]) for kind in ["binary", "code", "prose", "tabular"]],
+        line("all", chunks)]
+
+
+# the summary is safe to share: numbers only, no names of files
+def test_chunk_summary_has_no_file_names(tmp_path, capsys):
+    yaml_file, folder = chunk_setup(tmp_path)
+    run_chunk(yaml_file)
+    out = capsys.readouterr().out
+    assert "Chunks" in out and "secret" not in out and "Άννα" not in out
+
+
+# the folder of the chunks is made if it is missing
+def test_chunk_makes_the_folder(tmp_path):
+    yaml_file, folder = chunk_setup(tmp_path)
+    assert not folder.exists()
+    run_chunk(yaml_file)
+    assert (folder / "chunks-content_aware.jsonl").is_file() and (folder / "chunks-content_aware.stats.json").is_file()
+
+
+# before any ingest there are no documents to chunk: a message that says to run the ingest, not a crash
+def test_chunk_before_ingest(tmp_path, capsys):
+    yaml_file, folder = chunk_setup(tmp_path)
+    (tmp_path / "docs" / "documents.jsonl").unlink()
+    with pytest.raises(SystemExit) as stop:
+        run_chunk(yaml_file)
+    assert stop.value.code != 0
+    err = capsys.readouterr().err
+    assert "invalid choice: 'chunk'" not in err and "ingest" in err
+    assert not folder.exists()
+
+
+# a corpus with many chunks of each type: 25 sections, 20 rows (one per chunk), 2 functions
+SAMPLE_DOCS = [
+    parsed("a/notes.md", "\n\n".join(f"# Ενότητα {i}\n\nΚείμενο {i}." for i in range(25))),
+    parsed("a/table.csv", "\n".join(f"Όνομα: φοιτητής{i}; Βαθμός: {i % 10}" for i in range(20)), "tabular"),
+    parsed("a/main.py", "def f():\n    return 1\n\ndef g():\n    return 2", "code"),
+    parsed("a/old.zip", "", "binary", "failed"),
+    parsed("a/empty.txt", "", "prose", "empty"),
+]
+SAMPLE_SETTINGS = "  tabular_rows: 1\n  narrative_words: 4\n"
+
+
+def sampled(tmp_path, capsys, n, seed=14):
+    yaml_file, folder = chunk_setup(tmp_path, SAMPLE_DOCS, SAMPLE_SETTINGS + f"seed: {seed}\n")
+    run_chunk(yaml_file, "--sample", str(n))
+    out = capsys.readouterr().out
+    chunks = {c.chunk_id: c for c in chunked(SAMPLE_DOCS, load_config(yaml_file))}
+    return out, chunks
+
+
+# the sample, after the summary: for each type in order, "=== type: k of n ===" (n = its chunks with text),
+# then each chunk as "--- chunk_id", its index_text, and an empty line
+def blocks(out):
+    found = {}
+    kind = None
+    lines = out.split("\n")
+    for i, line in enumerate(lines):
+        if line.startswith("=== "):
+            kind = line[4:line.index(":")]
+            found[kind] = {"header": line, "ids": []}
+        elif line.startswith("--- "):
+            found[kind]["ids"].append(line[4:])
+    return found
+
+
+def test_chunk_sample(tmp_path, capsys):
+    out, chunks = sampled(tmp_path, capsys, 3)
+    found = blocks(out)
+    with_text = {kind: [c for c in chunks.values() if c.content_type == kind and c.text] for kind in ["code", "prose", "tabular"]}
+    assert list(found) == ["code", "prose", "tabular"]  # in order; binary has only an empty chunk, so it has no sample
+    for kind, picked in found.items():
+        k = min(3, len(with_text[kind]))
+        assert picked["header"] == f"=== {kind}: {k} of {len(with_text[kind])} ==="
+        assert len(picked["ids"]) == len(set(picked["ids"])) == k
+        for chunk_id in picked["ids"]:
+            c = chunks[chunk_id]
+            assert c.content_type == kind and c.text  # never an empty chunk
+            assert f"--- {chunk_id}\n{c.index_text}\n\n" in out
+    assert out.index("Chunks ") < out.index("=== ")  # the summary comes first
+
+
+# a type with fewer chunks than asked shows all of them
+def test_chunk_sample_bigger_than_a_type(tmp_path, capsys):
+    out, chunks = sampled(tmp_path, capsys, 50)
+    found = blocks(out)
+    assert list(found) == ["code", "prose", "tabular"]  # without this, an empty output would pass
+    for kind, picked in found.items():
+        assert sorted(picked["ids"]) == sorted(c.chunk_id for c in chunks.values() if c.content_type == kind and c.text)
+
+
+# the seed of the config makes the sample the same every time, and another seed gives another sample
+def test_chunk_sample_follows_the_seed(tmp_path, capsys):
+    first, _ = sampled(tmp_path / "one", capsys, 3)
+    again, _ = sampled(tmp_path / "two", capsys, 3)
+    other, _ = sampled(tmp_path / "three", capsys, 3, seed=15)
+    assert first == again
+    assert blocks(first)["prose"]["ids"] != blocks(other)["prose"]["ids"]
+
+
+# a sample of 0 or fewer chunks is a mistake in the command
+@pytest.mark.parametrize("n", ["0", "-2"])
+def test_chunk_sample_must_be_positive(tmp_path, capsys, n):
+    yaml_file, folder = chunk_setup(tmp_path)
+    with pytest.raises(SystemExit) as stop:
+        run_chunk(yaml_file, "--sample", n)
+    assert stop.value.code != 0
+    assert "invalid choice: 'chunk'" not in capsys.readouterr().err
+
+
+def show_chunks(yaml_file, capsys, *args):
+    from rag_fs.cli import main
+    main(["show", str(yaml_file), *args])
+    return capsys.readouterr().out
+
+
+# show FILE --chunks: the path and root, an empty line, "chunks N (strategy)", an empty line, then each chunk as
+# "--- chunk_id", its index_text and an empty line; the chunks are made now, with the settings of the yaml
+@pytest.mark.parametrize("more", ["", "  strategy: naive\n  narrative_words: 3\n"], ids=["content_aware", "naive"])
+def test_show_chunks(tmp_path, capsys, more):
+    yaml_file, folder = chunk_setup(tmp_path, more=more)
+    config = load_config(yaml_file)
+    out = show_chunks(yaml_file, capsys, "secret-plans/notes.md", "--chunks")
+    expected = chunk_doc(CHUNK_DOCS[0], config.chunking)
+    assert out == (f"secret-plans/notes.md    (root_0)\n\nchunks {len(expected)} ({config.chunking.strategy})\n\n"
+                   + "".join(f"--- {c.chunk_id}\n{c.index_text}\n\n" for c in expected))
+    assert not folder.exists()  # it does not need the chunk command, and writes nothing
+
+
+# a file without text shows its one chunk with only the header; a name that two files have shows both
+def test_show_chunks_empty_and_by_name(tmp_path, capsys):
+    docs = CHUNK_DOCS + [parsed("other/notes.md", "Άλλο.")]
+    yaml_file, folder = chunk_setup(tmp_path, docs)
+    out = show_chunks(yaml_file, capsys, "old.zip", "--chunks")
+    assert out == "secret-plans/old.zip    (root_0)\n\nchunks 1 (content_aware)\n\n--- secret-plans/old.zip#0-0\nFile: secret-plans/old.zip\n\n\n\n"
+    headers = [line for line in show_chunks(yaml_file, capsys, "notes.md", "--chunks").splitlines()
+               if line.endswith("    (root_0)")]
+    assert headers == ["secret-plans/notes.md    (root_0)", "other/notes.md    (root_0)"]
+
+
+# --chunks goes with a file only
+@pytest.mark.parametrize("more", [["--chunks"], ["--status", "ok", "--chunks"], ["--quality", "--chunks"]],
+                         ids=["alone", "with status", "with quality"])
+def test_show_chunks_needs_a_file(tmp_path, capsys, more):
+    yaml_file, folder = chunk_setup(tmp_path)
+    with pytest.raises(SystemExit) as stop:
+        show_chunks(yaml_file, capsys, *more)
+    assert stop.value.code != 0
+    assert "unrecognized arguments" not in capsys.readouterr().err  # the option exists, it is used wrong
+
+
+# without --chunks, show prints the text as before
+def test_show_without_chunks_is_unchanged(tmp_path, capsys):
+    yaml_file, folder = chunk_setup(tmp_path)
+    out = show_chunks(yaml_file, capsys, "secret-plans/notes.md")
+    assert out.splitlines()[:3] == ["secret-plans/notes.md    (root_0)", "", f"status:ok    type:prose    len:{len(CHUNK_DOCS[0].raw_text)}"]
+    assert "--- " not in out
